@@ -101,6 +101,4 @@ run.log
 Thumbs.db
 
 # scipt files
-script.sh
-build.sh
 *.py

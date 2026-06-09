@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(FleSSM LANGUAGES CXX CUDA)
+project(GEM LANGUAGES CXX CUDA)
 # set(CMAKE_VERBOSE_MAKEFILE ON)
 
 set(CMAKE_CXX_COMPILER g++)
