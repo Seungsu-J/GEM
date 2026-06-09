@@ -1,0 +1,106 @@
+# Build output
+build/
+build-*/
+build.*/
+cmake-build*/
+dist/
+out/
+bin/
+lib/*.a
+lib/*.so
+
+# debug output
+*.txt
+*.log
+!CMakeLists.txt
+!*/CMakeLists.txt
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+Makefile
+
+# Compiled objects and binaries
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.ptx
+*.cubin
+*.fatbin
+*.module
+*.mod
+*.smod
+*.pch
+
+# CUDA profiler outputs
+*.ncu-rep
+*.nsys-rep
+*.nvvp
+
+# Logs and temporary files
+*.log
+*.trace
+*.tmp
+*.bak
+*.orig
+*~
+*.swp
+*.swo
+ninja.build
+.ninja_deps
+.ninja_log
+
+# Python cache and tooling
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints
+.coverage
+coverage.xml
+htmlcov/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+.envrc
+
+# Local tooling & IDE settings
+.vscode/
+.idea/
+*.code-workspace
+.clangd/
+.ccls-cache/
+
+# Generated runtime/debug data
+runtime_data/
+exp_data/
+run.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# scipt files
+script.sh
+build.sh
+*.py
