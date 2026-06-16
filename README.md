@@ -77,3 +77,7 @@ Note:
 - the beginning `t`, `v`, `e` is a character for marking.
 
 # 5. Report
+
+The output contains time for filtering, index-construction and join, the total time(sum), as well as the final results.
+
+We present the join time and total time in both **us** and **ms** in case the total time is less than 1ms.
