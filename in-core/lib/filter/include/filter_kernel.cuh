@@ -14,7 +14,7 @@ buildQueryNLCSSM_kernel(
     uint32_t *d_query_nlc_table_);
 
 __global__ void
-LDfilterSSM_kernel(
+LDfilterSSM_kernel_workpool(
     degtype *query_out_degrees_,
     vltype *query_vLabels_,
     offtype *d_offsets_,
@@ -22,7 +22,43 @@ LDfilterSSM_kernel(
     vltype *d_v_labels_,
     degtype *d_v_degrees_,
     uint32_t *d_query_nlc_table_,
-    uint32_t *d_bitmap, uint32_t bitmap_pitch);
+    uint32_t *d_bitmap, uint32_t bitmap_pitch,
+    uint32_t *workpool,
+    const vltype *d_label_remap, vltype label_remap_size);
+
+__global__ void
+LDfilterSSM_kernel_workpool_4(
+    degtype *query_out_degrees_,
+    vltype *query_vLabels_,
+    offtype *d_offsets_,
+    vtype *d_nbrs_,
+    vltype *d_v_labels_,
+    degtype *d_v_degrees_,
+    uint32_t *d_query_nlc_table_,
+    uint32_t *d_bitmap, uint32_t bitmap_pitch, uint32_t *workpool,
+    const vltype *d_label_remap, vltype label_remap_size);
+
+__global__ void LDfilterSSM_kernel_sequence(
+    degtype *query_out_degrees_,
+    vltype *query_vLabels_,
+    offtype *d_offsets_,
+    vtype *d_nbrs_,
+    vltype *d_v_labels_,
+    degtype *d_v_degrees_,
+    uint32_t *d_query_nlc_table_,
+    uint32_t *d_bitmap, uint32_t bitmap_pitch,
+    const vltype *d_label_remap, vltype label_remap_size);
+
+__global__ void LDfilterSSM_kernel_4(
+    degtype *query_out_degrees_,
+    vltype *query_vLabels_,
+    offtype *d_offsets_,
+    vtype *d_nbrs_,
+    vltype *d_v_labels_,
+    degtype *d_v_degrees_,
+    uint32_t *d_query_nlc_table_,
+    uint32_t *d_bitmap, uint32_t bitmap_pitch,
+    const vltype *d_label_remap, vltype label_remap_size);
 
 __global__ void
 write_results(

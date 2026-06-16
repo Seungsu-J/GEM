@@ -18,8 +18,6 @@ public:
   vtype *neighbors_;        // arr size = 2*|E|
   etype *edgeIDs_;          // arr
 
-  uint32_t *data_; // used for actual data.
-
   gpuGraph();
   ~gpuGraph();
 };

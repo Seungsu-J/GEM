@@ -5,11 +5,13 @@
 #include "cuckooHash.cuh"
 #include "construct_kernel.cuh"
 #include "lattice.h"
-#include "memory_manager.h"
+#include "memory_manager.cuh"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+
+#include <omp.h>
 
 #include <random>
 #include <cub/cub.cuh>
@@ -122,44 +124,188 @@ void HashTable::init(uint32_t num_edges)
 
 void HashTable::clear()
 {
-  for (int i = 0; i < NUM_TABLES; ++i)
+  if (!MemoryManager::isInitialized())
   {
-    if (d_keys_[i])
+    for (int i = 0; i < NUM_TABLES; ++i)
     {
-      cudaFree(d_keys_[i]);
-      d_keys_[i] = nullptr;
+      if (d_keys_[i])
+      {
+        cudaFree(d_keys_[i]);
+        d_keys_[i] = nullptr;
+      }
+      if (d_values_[i])
+      {
+        cudaFree(d_values_[i]);
+        d_values_[i] = nullptr;
+      }
+      if (d_pos_in_org[i])
+      {
+        cudaFree(d_pos_in_org[i]);
+        d_pos_in_org[i] = nullptr;
+      }
     }
+
+    if (d_buffer_)
+    {
+      cudaFree(d_buffer_);
+      d_buffer_ = nullptr;
+      d_num_buckets_ = nullptr;
+      d_hash_table_offs_ = nullptr;
+    }
+
+    if (d_hash_constants_)
+    {
+      cudaFree(d_hash_constants_);
+      d_hash_constants_ = nullptr;
+    }
+
+    if (d_offsets_)
+    {
+      cudaFree(d_offsets_);
+      d_offsets_ = nullptr;
+    }
+
+    if (h_buffer)
+    {
+      delete[] h_buffer;
+      h_buffer = nullptr;
+      h_num_buckets_ = nullptr;
+      h_hash_table_offs_ = nullptr;
+    }
+
+  edge_offset_starts_.clear();
+  return;
+  }
+
+  cudaStream_t clear_stream = nullptr;
+  MemoryManager *mem_mgr = nullptr;
+  if (cudaStreamCreate(&clear_stream) == cudaSuccess)
+  {
+    try
+    {
+      mem_mgr = &MemoryManager::getInstance();
+      mem_mgr->set_stream(&clear_stream);
+    }
+    catch (...)
+    {
+      mem_mgr = nullptr;
+    }
+  }
+
+	  for (int i = 0; i < NUM_TABLES; ++i)
+	  {
+	    if (d_keys_[i])
+	    {
+	      if (mem_mgr != nullptr)
+	      {
+	        try
+	        {
+	          mem_mgr->deallocate_permanent(d_keys_[i]);
+	        }
+	        catch (...)
+	        {
+	          cudaFree(d_keys_[i]);
+	          d_keys_[i] = nullptr;
+	        }
+	      }
+	      else
+	      {
+	        cudaFree(d_keys_[i]);
+	        d_keys_[i] = nullptr;
+	      }
+	    }
     if (d_values_[i])
     {
+      // d_values_ currently unused; keep compatibility with legacy callers.
       cudaFree(d_values_[i]);
       d_values_[i] = nullptr;
     }
-    if (d_pos_in_org[i])
-    {
-      cudaFree(d_pos_in_org[i]);
-      d_pos_in_org[i] = nullptr;
-    }
-  }
+	    if (d_pos_in_org[i])
+	    {
+	      if (mem_mgr != nullptr)
+	      {
+	        try
+	        {
+	          mem_mgr->deallocate_permanent(d_pos_in_org[i]);
+	        }
+	        catch (...)
+	        {
+	          cudaFree(d_pos_in_org[i]);
+	          d_pos_in_org[i] = nullptr;
+	        }
+	      }
+	      else
+	      {
+	        cudaFree(d_pos_in_org[i]);
+	        d_pos_in_org[i] = nullptr;
+	      }
+	    }
+	  }
 
-  if (d_buffer_)
-  {
-    cudaFree(d_buffer_);
-    d_buffer_ = nullptr;
-    d_num_buckets_ = nullptr;
-    d_hash_table_offs_ = nullptr;
-  }
+	  if (d_buffer_)
+	  {
+	    if (mem_mgr != nullptr)
+	    {
+	      try
+	      {
+	        mem_mgr->deallocate_permanent(d_buffer_);
+	      }
+	      catch (...)
+	      {
+	        cudaFree(d_buffer_);
+	        d_buffer_ = nullptr;
+	      }
+	    }
+	    else
+	    {
+	      cudaFree(d_buffer_);
+	      d_buffer_ = nullptr;
+	    }
+	    d_num_buckets_ = nullptr;
+	    d_hash_table_offs_ = nullptr;
+	  }
 
-  if (d_hash_constants_)
-  {
-    cudaFree(d_hash_constants_);
-    d_hash_constants_ = nullptr;
-  }
+	  if (d_hash_constants_)
+	  {
+	    if (mem_mgr != nullptr)
+	    {
+	      try
+	      {
+	        mem_mgr->deallocate_permanent(d_hash_constants_);
+	      }
+	      catch (...)
+	      {
+	        cudaFree(d_hash_constants_);
+	        d_hash_constants_ = nullptr;
+	      }
+	    }
+	    else
+	    {
+	      cudaFree(d_hash_constants_);
+	      d_hash_constants_ = nullptr;
+	    }
+	  }
 
-  if (d_offsets_)
-  {
-    cudaFree(d_offsets_);
-    d_offsets_ = nullptr;
-  }
+	  if (d_offsets_)
+	  {
+	    if (mem_mgr != nullptr)
+	    {
+	      try
+	      {
+	        mem_mgr->deallocate_permanent(d_offsets_);
+	      }
+	      catch (...)
+	      {
+	        cudaFree(d_offsets_);
+	        d_offsets_ = nullptr;
+	      }
+	    }
+	    else
+	    {
+	      cudaFree(d_offsets_);
+	      d_offsets_ = nullptr;
+	    }
+	  }
 
   if (h_buffer)
   {
@@ -170,6 +316,17 @@ void HashTable::clear()
   }
 
   edge_offset_starts_.clear();
+
+  if (mem_mgr != nullptr)
+  {
+    cudaStreamSynchronize(clear_stream);
+    mem_mgr->reset_stream();
+  }
+  if (clear_stream != nullptr)
+  {
+    cudaStreamDestroy(clear_stream);
+    clear_stream = nullptr;
+  }
 }
 
 void HashTable::build(cpuGraph *hq,
@@ -180,8 +337,11 @@ void HashTable::build(cpuGraph *hq,
   cudaStream_t build_stream;
   cuchk(cudaStreamCreate(&build_stream));
 
+  auto &mem_mgr = MemoryManager::getInstance();
+  mem_mgr.set_stream(&build_stream);
+
   const uint32_t NUM_TRIES = NUM_EQ * 2 + 1;
-  cuchk(cudaMallocAsync(&d_buffer_, sizeof(uint32_t) * NUM_TRIES * 2, build_stream));
+  mem_mgr.allocate_permanent(d_buffer_, sizeof(uint32_t) * NUM_TRIES * 2);
   d_num_buckets_ = d_buffer_;
   d_hash_table_offs_ = d_num_buckets_ + NUM_TRIES;
 
@@ -204,8 +364,8 @@ void HashTable::build(cpuGraph *hq,
 
   for (int i = 0; i < NUM_TABLES; ++i)
   {
-    cuchk(cudaMallocAsync(&d_keys_[i], sizeof(uint32_t) * total_size_per_table, build_stream));
-    cuchk(cudaMallocAsync((void **)&d_pos_in_org[i], sizeof(uint32_t) * total_size_per_table, build_stream)); // new line
+    mem_mgr.allocate_permanent(d_keys_[i], sizeof(uint32_t) * total_size_per_table);
+    mem_mgr.allocate_permanent(d_pos_in_org[i], sizeof(uint32_t) * total_size_per_table);
     // cuchk(cudaMallocAsync(&d_values_[i], sizeof(uint32_t) * (total_size_per_table * 2 + 1), build_stream));
     // cuchk(cudaMemsetAsync(d_values_[i], 0, sizeof(uint32_t) * (total_size_per_table * 2 + 1), build_stream));
   }
@@ -216,7 +376,7 @@ void HashTable::build(cpuGraph *hq,
   uint32_t success = 0;
 
   uint32_t *progress;
-  cuchk(cudaMallocAsync(&progress, sizeof(uint32_t) * 3, build_stream));
+  mem_mgr.allocate_temporal(progress, sizeof(uint32_t) * 3);
   for (etype e = 0; e < NUM_EQ * 2; ++e)
   {
     vtype u = hq->evv[e].first;
@@ -326,109 +486,12 @@ void HashTable::build(cpuGraph *hq,
     }
   }
 
-  cuchk(cudaMallocAsync(&d_hash_constants_, sizeof(uint32_t) * MAX_EQ * 2 * NUM_TABLES * 2, build_stream));
+  mem_mgr.allocate_permanent(d_hash_constants_, sizeof(uint32_t) * MAX_EQ * 2 * NUM_TABLES * 2);
   cuchk(cudaMemcpyAsync(d_hash_constants_, hash_constants_, sizeof(uint32_t) * MAX_EQ * 2 * NUM_TABLES * 2, cudaMemcpyHostToDevice, build_stream));
-  cuchk(cudaFreeAsync(progress, build_stream));
+  mem_mgr.deallocate_temporal(progress);
 
-#ifndef NDEBUG
-  std::ofstream outfile("runtime_data/HashTables.txt");
-  vtype *h_keys_[2] = {new vtype[total_size_per_table], new vtype[total_size_per_table]};
-  cuchk(cudaMemcpyAsync(h_keys_[0], d_keys_[0], sizeof(vtype) * total_size_per_table, cudaMemcpyDeviceToHost, build_stream));
-  cuchk(cudaMemcpyAsync(h_keys_[1], d_keys_[1], sizeof(vtype) * total_size_per_table, cudaMemcpyDeviceToHost, build_stream));
-  uint32_t flag[NUM_VQ] = {0, 0, 0, 0};
   cuchk(cudaStreamSynchronize(build_stream));
-  for (etype e = 0; e < NUM_EQ * 2; ++e)
-  {
-    vtype u = hq->evv[e].first;
-    if (flag[u])
-      continue;
-    flag[u] = 1;
-
-    uint32_t offset = h_hash_table_offs_[e];
-    uint32_t num_buckets = h_num_buckets_[e];
-    outfile << "Hash Table for vertex u=" << u << " \n";
-    for (int table_idx = 0; table_idx < NUM_TABLES; ++table_idx)
-    {
-      outfile << "table " << table_idx << ":\n";
-      for (int i = 0; i < num_buckets * BUCKET_DIM; ++i)
-      {
-        vtype key = h_keys_[table_idx][offset + i];
-        outfile << key << " ";
-      }
-      outfile << "\n";
-    }
-    outfile << '\n';
-  }
-  delete[] h_keys_[0];
-  delete[] h_keys_[1];
-  outfile.close();
-  outfile.open("runtime_data/HashPos.txt");
-  uint32_t *h_pos_[2] = {new uint32_t[total_size_per_table], new uint32_t[total_size_per_table]};
-  cuchk(cudaMemcpyAsync(h_pos_[0], d_pos_in_org[0], sizeof(uint32_t) * total_size_per_table, cudaMemcpyDeviceToHost, build_stream));
-  cuchk(cudaMemcpyAsync(h_pos_[1], d_pos_in_org[1], sizeof(uint32_t) * total_size_per_table, cudaMemcpyDeviceToHost, build_stream));
-  cuchk(cudaStreamSynchronize(build_stream));
-  for (etype e = 0; e < NUM_EQ * 2; ++e)
-  {
-    vtype u = hq->evv[e].first;
-    if (flag[u] == 2)
-      continue;
-    flag[u] = 2;
-
-    uint32_t offset = h_hash_table_offs_[e];
-    uint32_t num_buckets = h_num_buckets_[e];
-    outfile << "Hash Pos Table for vertex u=" << u << " \n";
-    for (int table_idx = 0; table_idx < NUM_TABLES; ++table_idx)
-    {
-      outfile << "table " << table_idx << ":\n";
-      for (int i = 0; i < num_buckets * BUCKET_DIM; ++i)
-      {
-        uint32_t pos = h_pos_[table_idx][offset + i];
-        outfile << pos << " ";
-      }
-      outfile << '\n';
-    }
-    outfile << '\n';
-  }
-  delete[] h_pos_[0];
-  delete[] h_pos_[1];
-  outfile.close();
-  outfile.open("runtime_data/HashConstants.txt");
-  for (etype e = 0; e < NUM_EQ * 2; ++e)
-  {
-    vtype u = hq->evv[e].first;
-    if (flag[u] == 3)
-      continue;
-    flag[u] = 3;
-
-    outfile << "Hash Constants for vertex u=" << u << " \n";
-    for (int table_idx = 0; table_idx < NUM_TABLES; ++table_idx)
-    {
-      uint32_t c0 = hash_constants_[e * NUM_TABLES * 2 + table_idx * 2 + 0];
-      uint32_t c1 = hash_constants_[e * NUM_TABLES * 2 + table_idx * 2 + 1];
-      outfile << "table " << table_idx << ": " << c0 << ", " << c1 << "\n";
-    }
-    outfile << '\n';
-  }
-  outfile.close();
-
-  outfile.open("runtime_data/HashTableAddrs.txt");
-  for (etype e = 0; e < NUM_EQ * 2; ++e)
-  {
-    vtype u = hq->evv[e].first;
-    if (flag[u] == 4)
-      continue;
-    flag[u] = 4;
-
-    outfile << "Hash Table Addrs for vertex u=" << u << " \n";
-    for (int table_idx = 0; table_idx < NUM_TABLES; ++table_idx)
-    {
-      outfile << "table " << table_idx << ": " << d_keys_[table_idx] + h_hash_table_offs_[e] << "\n";
-    }
-    outfile << '\n';
-  }
-  outfile.close();
-#endif
-  cuchk(cudaStreamSynchronize(build_stream));
+  mem_mgr.reset_stream();
   cuchk(cudaStreamDestroy(build_stream));
 }
 
@@ -511,7 +574,16 @@ UnifiedTrie::UnifiedTrie() : id(UINT32_MAX), et(ettype()), num_layers(0u), num_c
 
 UnifiedTrie::~UnifiedTrie()
 {
-  // deallocateData();
+  if (data)
+  {
+    delete data;
+    data = nullptr;
+  }
+  if (r_data)
+  {
+    delete r_data;
+    r_data = nullptr;
+  }
 }
 
 void UnifiedTrie::init(uint32_t trie_id, ettype edge_tag, uint32_t levels, uint32_t cols)
@@ -580,24 +652,54 @@ void UnifiedTrie::allocateDataMemMgr(uint32_t id, uint64_t num_rows, bool is_mas
 
 void UnifiedTrie::allocateData(uint64_t num_rows, bool is_mask)
 {
-  if (data)
+  auto &mem_mgr = MemoryManager::getInstance();
+  if (data || r_data)
     deallocateData();
   data = new DataBlock();
   data->init(num_rows, is_mask);
-  data->allocate();
+
+  bool alloc_success = mem_mgr.allocate_trie(this->id);
+  if (alloc_success)
+    mem_mgr.p_type = ProcessType::DIRECT;
+  else // if (!alloc_success)
+    mem_mgr.p_type = ProcessType::PIPELINE;
 }
 
 void UnifiedTrie::deallocateData()
 {
+  if (!MemoryManager::isInitialized())
+  {
+    if (data)
+    {
+      delete data;
+      data = nullptr;
+    }
+    if (r_data)
+    {
+      delete r_data;
+      r_data = nullptr;
+    }
+    return;
+  }
+
+  auto &mem_mgr = MemoryManager::getInstance();
+  mem_mgr.deallocate_trie(this->id, this);
+
   if (data)
   {
-    data->deallocate();
+    if (data->d_data)
+      mem_mgr.deallocate_permanent(data->d_data);
+    if (data->d_parents)
+      mem_mgr.deallocate_permanent(data->d_parents);
     delete data;
     data = nullptr;
   }
   if (r_data)
   {
-    r_data->deallocate();
+    if (r_data->d_data)
+      mem_mgr.deallocate_permanent(r_data->d_data);
+    if (r_data->d_parents)
+      mem_mgr.deallocate_permanent(r_data->d_parents);
     delete r_data;
     r_data = nullptr;
   }
@@ -663,9 +765,51 @@ void UnifiedTrieManager::init(uint32_t var_num_tries)
 
 void UnifiedTrieManager::clear()
 {
+  cudaStream_t clear_stream = nullptr;
+  MemoryManager *mem_mgr = nullptr;
+  const bool has_mem_mgr = MemoryManager::isInitialized();
+
+  if (has_mem_mgr)
+  {
+    if (cudaStreamCreate(&clear_stream) == cudaSuccess)
+    {
+      try
+      {
+        mem_mgr = &MemoryManager::getInstance();
+        mem_mgr->set_stream(&clear_stream);
+      }
+      catch (...)
+      {
+        mem_mgr = nullptr;
+      }
+    }
+  }
+
   for (auto trie : tries)
+  {
     if (trie)
+    {
+      try
+      {
+        trie->deallocateData();
+      }
+      catch (...)
+      {
+      }
       delete trie;
+    }
+  }
+
+  if (mem_mgr != nullptr)
+  {
+    cudaStreamSynchronize(clear_stream);
+    mem_mgr->reset_stream();
+  }
+  if (clear_stream != nullptr)
+  {
+    cudaStreamDestroy(clear_stream);
+    clear_stream = nullptr;
+  }
   tries.clear();
   num_tries = 0;
   // complete_rq_ids.clear();
@@ -779,12 +923,10 @@ uint32_t UnifiedTrieManager::getNumTries() const { return num_tries; }
 
 std::vector<uint64_t *> &UnifiedTrieManager::get_parent_arrays(uint32_t trie_id)
 {
-  if (trie_id >= num_tries)
-    throw std::runtime_error("Trie ID invalid in get_parent_arrays.");
-
   UnifiedTrie *trie = tries[trie_id];
-  if (!trie)
-    throw std::runtime_error("Trie is null in get_parent_arrays.");
+
+  auto &mem_mgr = MemoryManager::getInstance();
+  mem_mgr.climb_parents.clear();
 
   // Use a static thread-local cache to avoid allocating on each call
   static thread_local std::vector<uint64_t *> result;
@@ -810,6 +952,11 @@ std::vector<uint64_t *> &UnifiedTrieManager::get_parent_arrays(uint32_t trie_id)
       // Subsequent columns store parent pointers
       if (col_trie->data)
       {
+        int block_idx = col_trie_id * 2 + 1;
+        if (mem_mgr.memory_blocks[block_idx].onHost())
+        {
+          mem_mgr.load_parent(col_trie_id);
+        }
         result.push_back(col_trie->data->d_parents);
 #ifndef NDEBUG
         printf("Parent array for trie ID %u: %p\n", col_trie_id, col_trie->data->d_parents);
@@ -830,12 +977,85 @@ std::vector<uint64_t *> &UnifiedTrieManager::get_parent_arrays(uint32_t trie_id)
         printf("Parent array for trie ID %u (null): %p\n", col_trie_id, nullptr);
 #endif
       }
+      mem_mgr.pin_parent(col_trie_id);
+      mem_mgr.climb_parents.push_back(col_trie_id);
     }
   }
 
   return result;
 }
 
+std::vector<uint64_t *> &UnifiedTrieManager::get_parent_arrays(uint32_t trie_id, uint32_t up_to_col)
+{
+  UnifiedTrie *trie = tries[trie_id];
+
+  auto &mem_mgr = MemoryManager::getInstance();
+  mem_mgr.climb_parents.clear();
+
+  // Use a static thread-local cache to avoid allocating on each call
+  static thread_local std::vector<uint64_t *> result;
+  result.clear();
+  assert(result.size() == 0);
+  result.reserve(trie->column_ids.size());
+
+  // Use column_ids to directly fetch parent pointers
+  // column_ids contains the trie IDs for each column in order (root to current)
+  for (int i = 0; i < trie->column_ids.size(); ++i)
+  {
+    uint32_t col_trie_id = trie->column_ids[i];
+    mem_mgr.climb_parents.push_back(col_trie_id);
+    if (i <= up_to_col) // the very first useful column's parent array is useless.
+    {
+      result.push_back(nullptr);
+      continue;
+    }
+
+    UnifiedTrie *col_trie = tries[col_trie_id];
+    assert(col_trie != nullptr);
+
+    if (i == 0)
+    {
+      // First column (vertex node) has no parent
+      result.push_back(nullptr);
+    }
+    else
+    {
+      // Subsequent columns store parent pointers
+      if (col_trie->data)
+      {
+        int block_idx = col_trie_id * 2 + 1;
+        if (mem_mgr.memory_blocks[block_idx].onHost())
+        {
+          mem_mgr.load_parent(col_trie_id);
+        }
+        result.push_back(col_trie->data->d_parents);
+#ifndef NDEBUG
+        printf("Parent array for trie ID %u: %p\n", col_trie_id, col_trie->data->d_parents);
+#endif
+      }
+      else if (col_trie->r_data)
+      {
+        result.push_back(col_trie->r_data->d_parents);
+#ifndef NDEBUG
+        printf("Parent array for trie ID %u (r_data): %p\n", col_trie_id, col_trie->r_data->d_parents);
+#endif
+      }
+      else
+      {
+        // std::cerr << "Warning: Parent array for trie ID " << col_trie_id << " is null." << std::endl;
+        result.push_back(nullptr);
+#ifndef NDEBUG
+        printf("Parent array for trie ID %u (null): %p\n", col_trie_id, nullptr);
+#endif
+      }
+      mem_mgr.pin_parent(col_trie_id);
+    }
+  }
+
+  return result;
+}
+
+// TODO: Need to transfer a vector indicating which data arrays are needed. ==> To be pinned, otherwise no need to load them -- just insert a nullptr.
 std::vector<vtype *> &UnifiedTrieManager::get_data_arrays(uint32_t trie_id)
 {
   if (trie_id >= num_tries)
@@ -844,6 +1064,9 @@ std::vector<vtype *> &UnifiedTrieManager::get_data_arrays(uint32_t trie_id)
   UnifiedTrie *trie = tries[trie_id];
   if (!trie)
     throw std::runtime_error("Trie is null in get_data_arrays.");
+
+  auto &mem_mgr = MemoryManager::getInstance();
+  mem_mgr.climb_data.clear();
 
   // Use a static thread-local cache to avoid allocating on each call
   static thread_local std::vector<vtype *> result;
@@ -856,7 +1079,6 @@ std::vector<vtype *> &UnifiedTrieManager::get_data_arrays(uint32_t trie_id)
   for (uint32_t col_trie_id : trie->column_ids)
     printf("%u, ", col_trie_id);
   printf("\n");
-  printf("Expected: 6, 4\n");
 #endif
 
   // Use column_ids to directly fetch data pointers
@@ -867,6 +1089,11 @@ std::vector<vtype *> &UnifiedTrieManager::get_data_arrays(uint32_t trie_id)
     assert(col_trie != nullptr);
     if (col_trie->data)
     {
+      int block_idx = col_trie_id * 2;
+      if (mem_mgr.memory_blocks[block_idx].onHost())
+      {
+        mem_mgr.load_data(col_trie_id);
+      }
       result.push_back(col_trie->data->d_data);
 #ifndef NDEBUG
       printf("Data array for trie ID %u: %p\n", col_trie_id, col_trie->data->d_data);
@@ -888,6 +1115,86 @@ std::vector<vtype *> &UnifiedTrieManager::get_data_arrays(uint32_t trie_id)
 #endif
       result.push_back(nullptr);
     }
+    mem_mgr.climb_data.push_back(col_trie_id);
+    mem_mgr.pin_data(col_trie_id);
+  }
+
+  return result;
+}
+
+std::vector<vtype *> &UnifiedTrieManager::get_data_arrays(uint32_t trie_id, std::vector<uint32_t> &pin_cols)
+{
+  UnifiedTrie *trie = tries[trie_id];
+
+  auto &mem_mgr = MemoryManager::getInstance();
+  mem_mgr.climb_data.clear();
+
+  // Use a static thread-local cache to avoid allocating on each call
+  static thread_local std::vector<vtype *> result;
+  result.clear();
+  assert(result.size() == 0);
+  result.reserve(trie->column_ids.size());
+
+  // Use column_ids to directly fetch data pointers
+  // column_ids contains the trie IDs for each column in order (root to current)
+  int pin_idx = 0;
+  for (int i = 0; i < trie->num_cols; ++i)
+  {
+    auto col_trie_id = trie->column_ids[i];
+    mem_mgr.climb_data.push_back(col_trie_id);
+    // if (pin_idx < pin_cols.size() && pin_cols[pin_idx] != i)
+    // {
+    //   result.push_back(nullptr);
+    //   continue;
+    // }
+    // ++pin_idx;
+    UnifiedTrie *col_trie = tries[col_trie_id];
+    // assert(col_trie != nullptr);
+    if (col_trie->data)
+    {
+      int block_idx = col_trie_id * 2;
+      if (mem_mgr.memory_blocks[block_idx].onDevice())
+      {
+        result.push_back(col_trie->data->d_data);
+      }
+      else // if (mem_mgr.memory_blocks[block_idx].onHost())
+      {
+        if (pin_cols[pin_idx] == i)
+        {
+          mem_mgr.load_data(col_trie_id);
+          result.push_back(col_trie->data->d_data);
+        }
+        else
+        {
+          result.push_back(nullptr);
+        }
+      }
+      // result.push_back(col_trie->data->d_data);
+#ifndef NDEBUG
+      printf("Data array for trie ID %u: %p\n", col_trie_id, col_trie->data->d_data);
+#endif
+    }
+    else if (col_trie->r_data) // r_data always on device.
+    {
+      result.push_back(col_trie->r_data->d_data);
+      // if (col_trie->column_ids.size() == 2)
+      //   r_flag = true;
+#ifndef NDEBUG
+      printf("Data array for trie ID %u (r_data): %p\n", col_trie_id, col_trie->r_data->d_data);
+#endif
+    }
+    else
+    {
+#ifndef NDEBUG
+      std::cerr << "Warning: Data array for trie ID " << col_trie_id << " is null." << std::endl;
+#endif
+      result.push_back(nullptr);
+    }
+    if (pin_cols[pin_idx] == i)
+    {
+      pin_idx++;
+      mem_mgr.pin_data(col_trie_id);
+    }
   }
 
   return result;
@@ -900,7 +1207,9 @@ void UnifiedTrieManager::initVertexTries(
   cuchk(cudaStreamCreate(&build_stream));
   auto &mem_mgr = MemoryManager::getInstance();
   auto &lat = Lattice::getInstance();
+  mem_mgr.set_stream(&build_stream);
   uint32_t vertex_node_start = lat.num_lattice_nodes - NUM_VQ;
+  // #pragma omp parallel for
   for (uint32_t i = 0; i < NUM_VQ; ++i)
   {
     uint32_t vertex_trie_id = vertex_node_start + i;
@@ -913,27 +1222,18 @@ void UnifiedTrieManager::initVertexTries(
     vertex_trie->layer_ids.push_back(vertex_trie_id);
     vertex_trie->data = new DataBlock();
     vertex_trie->data->init(h_num_u_candidate_vs_[i], false);
-    vertex_trie->data->size_in_byte >>= 1; // no parent pointers.
+    vertex_trie->data->size_in_byte = sizeof(vtype) * h_num_u_candidate_vs_[i]; // no parent pointers.
     // mem_mgr->allocate_gpu_memory(vertex_trie_id, h_num_u_candidate_vs_[i] * sizeof(vtype), &vertex_trie->data->d_space);
-    cuchk(cudaMallocAsync((void **)&vertex_trie->data->d_data, sizeof(vtype) * h_num_u_candidate_vs_[i], build_stream));
+    mem_mgr.allocate_trie(vertex_trie_id);
     cuchk(cudaMemcpyAsync(vertex_trie->data->d_data, d_u_candidate_vs_ + i * MAX_L_FREQ,
                           sizeof(vtype) * h_num_u_candidate_vs_[i], cudaMemcpyDeviceToDevice, build_stream));
+    mem_mgr.pin_trie(vertex_trie_id, true, true);
     // data_addr_list[vertex_trie_id] = {vertex_trie->data->d_data};
     // parent_addr_list[vertex_trie_id] = {nullptr};
   }
   cuchk(cudaStreamSynchronize(build_stream));
+  mem_mgr.reset_stream();
   cuchk(cudaStreamDestroy(build_stream));
-
-#ifndef NDEBUG
-  std::ofstream outfile("runtime_data/vertex_trie_data_addr.txt");
-  for (uint32_t i = 0; i < NUM_VQ; ++i)
-  {
-    uint32_t vertex_trie_id = vertex_node_start + i;
-    UnifiedTrie *vertex_trie = this->getTrie(vertex_trie_id);
-    outfile << "Vertex Trie ID: " << vertex_trie_id << ", d_data address: " << vertex_trie->data->d_data << "\n";
-  }
-  outfile.close();
-#endif
 }
 
 uint32_t UnifiedTrieManager::find_best_edge_candidate(
@@ -1017,6 +1317,160 @@ uint32_t UnifiedTrieManager::find_best_edge_candidate(
   return best_id;
 }
 
+// This version: predict join result size, if exceed, then put the one-degree vertices behind.
+uint32_t UnifiedTrieManager::find_best_edge_candidate2(
+    const ettype &cur_et)
+{
+  Lattice *lat = &Lattice::getInstance();
+  uint32_t best_id = UINT32_MAX;
+  double best_score = -1.0;
+
+  if (cur_et.none())
+  {
+    const double alpha = 0.6; // size weight;
+    const double beta = 0.3;  // contribution weight
+    const double gamma = 0.1; // connectivity weight
+    for (int i = 0; i < NUM_EQ; ++i)
+    {
+      ettype cur_edge = ettype().set(i);
+      int cur_id = lat->et2id[cur_edge];
+      if (lat->uncomputed_reachable_rq[cur_id].empty())
+        continue;
+      UnifiedTrie *trie = getTrie(cur_id);
+
+      double size_factor = 1.0 / (1.0 + trie->num_results + 1);
+      double contribution_factor = lat->get_contribution_value(cur_edge);
+      double connectivity_factor =
+          lat->reversed_linked_list[cur_id].size() * 0.1;
+
+      double score = alpha * size_factor + beta * contribution_factor +
+                     gamma * connectivity_factor;
+
+      if (score > best_score)
+      {
+        best_score = score;
+        best_id = cur_id;
+      }
+    }
+  }
+  else if (cur_et.count() == NUM_EQ)
+  {
+    // do nothing
+  }
+  else
+  {
+    const double alpha = 0.4; // size weight
+    const double beta = 0.4;  // contribution weight
+    const double gamma = 0.2; // selectivity weight (not used when checking memory)
+
+    int cur_id = lat->et2id[cur_et];
+    UnifiedTrie *cur_trie = getTrie(cur_id);
+
+    // Access memory manager to check available GPU memory
+    MemoryManager &mem_mgr = MemoryManager::getInstance();
+
+    for (auto next_id : lat->reversed_linked_list[cur_id])
+    {
+      // Filter: keep nodes that contribute to uncomputed reachable queries or are themselves uncomputed
+      if (lat->uncomputed_reachable_rq[next_id].empty() == false)
+        ; // keep it: has uncomputed reachable queries
+      else if (lat->is_uncomputed(next_id))
+        ; // keep it: not computed yet
+      else
+        continue; // skip: no contribution, not an rq
+
+      ettype next_et = lat->id2et[next_id];
+      ettype diff = next_et ^ cur_et;
+      if (diff.count() != 1)
+        continue; // Only consider single-edge additions
+
+      int diff_id = lat->et2id[diff];
+      UnifiedTrie *trie = getTrie(diff_id);
+
+      // Check if target trie will need materialization
+      bool needs_materialization = !lat->uncomputed_reachable_rq[next_id].empty();
+
+      if (needs_materialization)
+      {
+        // Estimate result size based on operation type
+        uint64_t estimated_num_results;
+        size_t estimated_memory_size;
+
+        // Determine if this is a select or join operation
+        // Select: when the diff edge introduces NO new vertices to cur_trie
+        // Join: when the diff edge introduces at least one new vertex
+        // Check if both vertices of the edge are already in cur_trie->mapped_query_us_
+        bool is_select = false;
+        if (cur_trie && cur_trie->mapped_query_us_ && trie && trie->edge_vertices[0] != UINT32_MAX)
+        {
+          // Check if both edge vertices are present in cur_trie's mapped vertices
+          bool u_found = false, v_found = false;
+          vtype edge_u = trie->edge_vertices[0];
+          vtype edge_v = trie->edge_vertices[1];
+
+          for (uint32_t i = 0; i < cur_trie->num_cols; ++i)
+          {
+            if (cur_trie->mapped_query_us_[i] == edge_u)
+              u_found = true;
+            if (cur_trie->mapped_query_us_[i] == edge_v)
+              v_found = true;
+          }
+
+          // It's a select if both vertices are already present
+          is_select = (u_found && v_found);
+        }
+
+        if (is_select)
+        {
+          // Select operation: result size ≈ edge size filtered by current trie
+          // Conservative estimate: assume moderate selectivity
+          estimated_num_results = trie->num_results;
+          // Select needs: 4 bytes per result (just vertex data)
+          estimated_memory_size = estimated_num_results * 4;
+        }
+        else
+        {
+          // Join operation: result size ≈ cur_size × edge_size (with selectivity)
+          // Use a conservative estimate (assume cross product scaled by 0.5)
+          uint64_t cur_num_results = (cur_trie && cur_trie->num_results > 0) ? cur_trie->num_results : 1;
+          estimated_num_results = (cur_num_results * trie->num_results) / 2;
+          // Join needs: 12 bytes per result (vertex data + parent pointer + metadata)
+          estimated_memory_size = estimated_num_results * 12;
+        }
+
+        // Check if estimated size exceeds available GPU memory
+        if (estimated_memory_size > mem_mgr.stats.available_gpu_memory)
+        {
+          if (best_id == -1)
+          {
+            // If no other candidates yet, pick this one anyway
+            best_score = 0.0; // Minimal score
+            best_id = diff_id;
+          }
+          // Skip this edge candidate - it would cause OOM
+          continue;
+        }
+      }
+
+      // Size factor: prefer smaller intermediate results
+      double size_factor = 1.0 / (1.0 + trie->num_results + 1);
+
+      // Contribution factor: prefer edges with higher contribution to final results
+      double contribution_factor = lat->get_contribution_value(diff);
+
+      // Combined score: higher is better (gamma not used since we hard-filter by memory)
+      double score = alpha * size_factor + beta * contribution_factor;
+
+      if (score > best_score)
+      {
+        best_score = score;
+        best_id = diff_id;
+      }
+    }
+  }
+  return best_id;
+}
+
 void UnifiedTrieManager::construct_edge_candidates(
     cpuGraph *hq, cpuGraph *hg, gpuGraph *dg,
     vtype *d_u_candidate_vs_, numtype *d_num_u_candidate_vs_, numtype *h_num_u_candidate_vs_,
@@ -1028,12 +1482,11 @@ void UnifiedTrieManager::construct_edge_candidates(
   auto &ht = HashTable::getInstance();
   auto &mem_mgr = MemoryManager::getInstance();
   auto &lat = Lattice::getInstance();
+  mem_mgr.set_stream(&construct_stream);
 
   uint32_t h_num_res = 0;
   // uint32_t *d_count_for_each;
   // offtype *d_offsets_each;
-  void *d_temp_storage = nullptr;
-  size_t temp_storage_bytes = 0;
 
   // First pass: compute total size needed for all edge offsets
   uint32_t total_offset_size = 0;
@@ -1050,20 +1503,20 @@ void UnifiedTrieManager::construct_edge_candidates(
   ht.edge_offset_starts_[NUM_EQ * 2] = total_offset_size;
 
   // Allocate the flat array for all edge offsets
-  cuchk(cudaMallocAsync(&ht.d_offsets_, sizeof(offtype) * total_offset_size, construct_stream));
+  mem_mgr.allocate_permanent(ht.d_offsets_, sizeof(offtype) * total_offset_size);
 
   // Second pass: compute and store offsets for each edge
   bool forward_flag = true;
 
   uint32_t h_max_value = 0;
   uint32_t *d_max_value;
-  cuchk(cudaMallocAsync(&d_max_value, sizeof(uint32_t), construct_stream));
+  mem_mgr.allocate_temporal(d_max_value, sizeof(uint32_t));
 
   uint32_t *neighbor_mask;
   uint32_t *neighbor_mask_scan_output;
   uint32_t *neighbor_mask_offsets;
   uint32_t h_neighbor_mask_tiles = 0;
-  cuchk(cudaMallocAsync(&neighbor_mask_offsets, sizeof(uint32_t) * (NUM_VD + 1), construct_stream));
+  mem_mgr.allocate_temporal(neighbor_mask_offsets, sizeof(uint32_t) * (NUM_VD + 1));
 
   // compute mask_offsets.
   void *d_temp_storage_for_offsets = nullptr;
@@ -1073,22 +1526,30 @@ void UnifiedTrieManager::construct_edge_candidates(
   cuchk(cub::DeviceScan::ExclusiveSum(
       d_temp_storage_for_offsets, temp_storage_bytes_for_offsets,
       neighbor_mask_iter, neighbor_mask_offsets, NUM_VD, construct_stream));
-  cuchk(cudaMallocAsync((void **)&d_temp_storage_for_offsets, temp_storage_bytes_for_offsets, construct_stream));
+  mem_mgr.allocate_temporal(d_temp_storage_for_offsets, temp_storage_bytes_for_offsets);
   cuchk(cub::DeviceScan::ExclusiveSum(
       d_temp_storage_for_offsets, temp_storage_bytes_for_offsets,
       neighbor_mask_iter, neighbor_mask_offsets, NUM_VD, construct_stream));
   add_last_for_exclusive_sum_div32ceil<<<1, 1, 0, construct_stream>>>(dg->degree_, neighbor_mask_offsets, NUM_VD, neighbor_mask_offsets + NUM_VD);
 
   cuchk(cudaMemcpyAsync(&h_neighbor_mask_tiles, neighbor_mask_offsets + NUM_VD, sizeof(uint32_t), cudaMemcpyDeviceToHost, construct_stream));
-  cuchk(cudaFreeAsync(d_temp_storage_for_offsets, construct_stream));
+  mem_mgr.deallocate_temporal(d_temp_storage_for_offsets);
   cuchk(cudaStreamSynchronize(construct_stream));
-  cuchk(cudaMallocAsync((void **)&neighbor_mask, sizeof(uint32_t) * (h_neighbor_mask_tiles + 1), construct_stream));
-  cuchk(cudaMallocAsync((void **)&neighbor_mask_scan_output, sizeof(uint32_t) * (h_neighbor_mask_tiles + 1), construct_stream));
+  mem_mgr.allocate_temporal(neighbor_mask, sizeof(uint32_t) * (h_neighbor_mask_tiles + 1));
+  mem_mgr.allocate_temporal(neighbor_mask_scan_output, sizeof(uint32_t) * (h_neighbor_mask_tiles + 1));
   cuchk(cudaMemsetAsync(neighbor_mask, 0, sizeof(uint32_t) * (h_neighbor_mask_tiles + 1), construct_stream));
 
   uint32_t *workpool;
   uint32_t num_warps = (BLOCK_DIM / 32) * GRID_DIM;
-  cuchk(cudaMallocAsync(&workpool, sizeof(uint32_t), construct_stream));
+  mem_mgr.allocate_temporal(workpool, sizeof(uint32_t));
+
+  void *d_temp_storage_for_neighbor_mask = nullptr;
+  size_t temp_storage_bytes_for_neighbor_mask = 0;
+  cub::TransformInputIterator<uint32_t, PopCountOp, uint32_t *> popcount_iter(neighbor_mask, PopCountOp());
+  cuchk(cub::DeviceScan::ExclusiveSum(
+      d_temp_storage_for_neighbor_mask, temp_storage_bytes_for_neighbor_mask,
+      popcount_iter, neighbor_mask_scan_output, (h_neighbor_mask_tiles + 1), construct_stream));
+  mem_mgr.allocate_temporal(d_temp_storage_for_neighbor_mask, temp_storage_bytes_for_neighbor_mask);
 
   for (vtype u = 0; u < hq->num_v; ++u)
   {
@@ -1096,8 +1557,6 @@ void UnifiedTrieManager::construct_edge_candidates(
       continue;
     for (offtype u_off = hq->offsets_[u]; u_off < hq->offsets_[u + 1]; ++u_off)
     {
-      // TODO: maybe can be removed. Test to remove it after the program runs correctly.
-      // cuchk(cudaMemsetAsync(neighbor_mask, 0, sizeof(uint32_t) * (h_neighbor_mask_tiles + 1), construct_stream));
       // move GPU operations ahead.
       // cuchk(cudaMemsetAsync(d_count_for_each, 0, sizeof(uint32_t) * max_num, construct_stream));
 
@@ -1106,8 +1565,8 @@ void UnifiedTrieManager::construct_edge_candidates(
       forward_flag = u < u_nbr;
       uint32_t lattice_node_id = lat.et2id[ettype().set(e >> 1)];
 
-      uint32_t dynamic_shared_memory_in_bytes = sizeof(vtype) * h_num_u_candidate_vs_[u];
-      dynamic_shared_memory_in_bytes = UINT32_MAX; // disable shared memory version for now.
+      uint32_t dynamic_shared_memory_in_bytes = sizeof(uint32_t) * bitmap_pitch;
+      // dynamic_shared_memory_in_bytes = UINT32_MAX; // disable shared memory version for now.
 
       cuchk(cudaMemcpyAsync(workpool, &num_warps, sizeof(uint32_t), cudaMemcpyHostToDevice, construct_stream));
 
@@ -1116,12 +1575,11 @@ void UnifiedTrieManager::construct_edge_candidates(
 #endif
 
       if (dynamic_shared_memory_in_bytes <= SHARED_MEMORY_LIMIT)
-        ;
-      // first_join_count_new<<<GRID_DIM, BLOCK_DIM, dynamic_shared_memory_in_bytes, construct_stream>>>(
-      //     dg->offsets_, dg->neighbors_, dg->degree_,
-      //     d_bitmap_mask, mask_length, u, u_nbr,
-      //     h_num_u_candidate_vs_[u], h_num_u_candidate_vs_[u_nbr],
-      //     d_u_candidate_vs_);
+        first_join_count_bitmap_task1_shared<<<GRID_DIM, BLOCK_DIM, dynamic_shared_memory_in_bytes, construct_stream>>>(
+            dg->offsets_, dg->neighbors_, dg->degree_,
+            d_bitmap + u_nbr * bitmap_pitch,
+            u, h_num_u_candidate_vs_[u], d_u_candidate_vs_ + u * MAX_L_FREQ,
+            neighbor_mask, neighbor_mask_offsets, workpool);
       else
         first_join_count_bitmap_task1<<<GRID_DIM, BLOCK_DIM, 0, construct_stream>>>(
             dg->offsets_, dg->neighbors_, dg->degree_,
@@ -1132,19 +1590,11 @@ void UnifiedTrieManager::construct_edge_candidates(
 
       /* >>>>>>>>>>>>>>>>>>>>>>>>>>> prefix sum on neighbor_mask <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< */
 
-      // TODO: optimize it. Can be reused. Move it outside the loop. -- remove freeAsync too.
-      d_temp_storage = nullptr;
-      temp_storage_bytes = 0;
-      cub::TransformInputIterator<uint32_t, PopCountOp, uint32_t *> popcount_iter(neighbor_mask, PopCountOp());
+      // pre-allocated outside the loop.
       cuchk(cub::DeviceScan::ExclusiveSum(
-          d_temp_storage, temp_storage_bytes,
+          d_temp_storage_for_neighbor_mask, temp_storage_bytes_for_neighbor_mask,
           popcount_iter, neighbor_mask_scan_output, (h_neighbor_mask_tiles + 1), construct_stream));
-      cuchk(cudaMallocAsync(&d_temp_storage, temp_storage_bytes, construct_stream));
-      cuchk(cub::DeviceScan::ExclusiveSum(
-          d_temp_storage, temp_storage_bytes,
-          popcount_iter, neighbor_mask_scan_output, (h_neighbor_mask_tiles + 1), construct_stream));
-      cuchk(cudaFreeAsync(d_temp_storage, construct_stream));
-      d_temp_storage = nullptr;
+
       cuchk(cudaMemcpyAsync(&h_num_res, neighbor_mask_scan_output + h_neighbor_mask_tiles, sizeof(uint32_t), cudaMemcpyDeviceToHost, construct_stream));
 
       /* >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> max value <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< */
@@ -1195,29 +1645,15 @@ void UnifiedTrieManager::construct_edge_candidates(
       std::cout << "Allocating edge candidate block for trie " << lattice_node_id
                 << " with " << h_num_res << " rows (" << cur_block->size_in_byte << " bytes)." << std::endl;
 #endif
-      cuchk(cudaMallocAsync(&cur_block->d_data, sizeof(uint32_t) * cur_block->num_rows, construct_stream));
-      cuchk(cudaMallocAsync(&cur_block->d_parents, sizeof(uint64_t) * cur_block->num_rows, construct_stream));
-      // cuchk(cudaMalloc(&cur_block->d_space, cur_block->size_in_byte));
-      // mem_mgr->allocate_gpu_memory(lattice_node_id, cur_block->size_in_byte, &cur_block->d_space);
-
-      // cur_block->d_data = reinterpret_cast<uint32_t *>(cur_block->d_space);
-      // cur_block->d_parents = reinterpret_cast<uint32_t *>(reinterpret_cast<char *>(cur_block->d_space) + cur_block->num_rows * sizeof(uint32_t));
-
-      // first_join_write_new<<<GRID_DIM, BLOCK_DIM, dynamic_shared_memory_in_bytes>>>(
-      //     dg->offsets_, dg->neighbors_, dg->degree_,
-      //     d_bitmap_mask, mask_length, u, u_nbr,
-      //     h_num_u_candidate_vs_[u], h_num_u_candidate_vs_[u_nbr],
-      //     d_u_candidate_vs_,
-      //     cur_block->d_data, d_edge_offsets, cur_block->d_parents, d_progress_each);
+      mem_mgr.allocate_trie(lattice_node_id, forward_flag);
+      mem_mgr.pin_trie(lattice_node_id, true, true);
 
       if (dynamic_shared_memory_in_bytes <= SHARED_MEMORY_LIMIT)
-        ;
-      // first_join_write_new<<<GRID_DIM, BLOCK_DIM, dynamic_shared_memory_in_bytes, construct_stream>>>(
-      //     dg->offsets_, dg->neighbors_, dg->degree_,
-      //     d_bitmap_mask, mask_length, u, u_nbr,
-      //     h_num_u_candidate_vs_[u], h_num_u_candidate_vs_[u_nbr],
-      //     d_u_candidate_vs_,
-      //     cur_block->d_data, d_edge_offsets, d_scan_res, mask_length + 1, cur_block->d_parents);
+        first_join_write_bitmap_task1_shared<<<GRID_DIM, BLOCK_DIM, 0, construct_stream>>>(
+            dg->offsets_, dg->neighbors_, dg->degree_,
+            neighbor_mask, neighbor_mask_offsets, neighbor_mask_scan_output,
+            u, h_num_u_candidate_vs_[u], d_u_candidate_vs_ + u * MAX_L_FREQ,
+            cur_block->d_data, d_edge_offsets, cur_block->d_parents, workpool);
       else
         first_join_write_bitmap_task1<<<GRID_DIM, BLOCK_DIM, 0, construct_stream>>>(
             dg->offsets_, dg->neighbors_, dg->degree_,
@@ -1240,152 +1676,14 @@ void UnifiedTrieManager::construct_edge_candidates(
   }
 
   // Cleanup temporary buffers (d_offsets_ in HashTable is kept)
-  cuchk(cudaFreeAsync(d_max_value, construct_stream));
-  cuchk(cudaFreeAsync(neighbor_mask, construct_stream));
-  cuchk(cudaFreeAsync(neighbor_mask_scan_output, construct_stream));
-  cuchk(cudaFreeAsync(neighbor_mask_offsets, construct_stream));
-  cuchk(cudaFreeAsync(workpool, construct_stream));
-  // cuchk(cudaFreeAsync(d_count_for_each, construct_stream));
-  // cuchk(cudaFreeAsync(d_offsets_each, construct_stream));
-  // cuchk(cudaFreeAsync(d_bitmap_mask, construct_stream));
+  mem_mgr.deallocate_temporal(d_temp_storage_for_neighbor_mask);
+  mem_mgr.deallocate_temporal(d_max_value);
+  mem_mgr.deallocate_temporal(neighbor_mask);
+  mem_mgr.deallocate_temporal(neighbor_mask_scan_output);
+  mem_mgr.deallocate_temporal(neighbor_mask_offsets);
+  mem_mgr.deallocate_temporal(workpool);
+
   cuchk(cudaStreamSynchronize(construct_stream));
-
-#ifndef NDEBUG
-  std::ofstream outfile("runtime_data/edge_candidate_data_addresses.txt");
-  for (uint32_t i = 0; i < NUM_EQ * 2; ++i)
-  {
-    auto [u, v] = hq->evv[i];
-    uint32_t trie_id = lat.et2id[ettype().set(i >> 1)];
-    if (hq->out_degree_[u] == 1)
-      continue;
-    UnifiedTrie *trie = this->getTrie(trie_id);
-    if (trie && trie->data)
-    {
-      outfile << "Trie ID: " << trie_id << ", d_data address: " << trie->data->d_data << "\n";
-    }
-    if (trie && trie->r_data)
-    {
-      outfile << "Trie ID: " << trie_id << " (r_data), d_data address: " << trie->r_data->d_data << "\n";
-    }
-  }
-  outfile.close();
-
-  outfile.open("runtime_data/edge_candidate_parent_addresses.txt");
-  for (uint32_t i = 0; i < NUM_EQ * 2; ++i)
-  {
-    auto [u, v] = hq->evv[i];
-    uint32_t trie_id = lat.et2id[ettype().set(i >> 1)];
-    if (hq->out_degree_[u] == 1)
-      continue;
-    UnifiedTrie *trie = this->getTrie(trie_id);
-    if (trie && trie->data)
-    {
-      outfile << "Trie ID: " << trie_id << ", d_parents address: " << trie->data->d_parents << "\n";
-    }
-    if (trie && trie->r_data)
-    {
-      outfile << "Trie ID: " << trie_id << " (r_data), d_parents address: " << trie->r_data->d_parents << "\n";
-    }
-  }
-  outfile.close();
-
-  outfile.open("runtime_data/edge_candidate_value_layer_data.txt");
-  for (uint32_t i = 0; i < NUM_EQ * 2; ++i)
-  {
-    auto [u, v] = hq->evv[i];
-    if (hq->out_degree_[u] == 1)
-      continue;
-    uint32_t trie_id = lat.et2id[ettype().set(i >> 1)];
-    UnifiedTrie *trie = this->getTrie(trie_id);
-    vtype *h_data = new vtype[trie->num_results];
-    if (u < v)
-    {
-      cuchk(cudaMemcpyAsync(h_data, trie->data->d_data, sizeof(vtype) * trie->data->num_rows, cudaMemcpyDeviceToHost, construct_stream));
-      cuchk(cudaStreamSynchronize(construct_stream));
-    }
-    else
-    {
-      cuchk(cudaMemcpyAsync(h_data, trie->r_data->d_data, sizeof(vtype) * trie->r_data->num_rows, cudaMemcpyDeviceToHost, construct_stream));
-      cuchk(cudaStreamSynchronize(construct_stream));
-    }
-    outfile << "Trie ID: " << trie_id << ", Data: ";
-    for (uint32_t j = 0; j < trie->num_results; ++j)
-    {
-      outfile << h_data[j] << " ";
-    }
-    outfile << "\n";
-    delete[] h_data;
-  }
-  outfile.close();
-
-  outfile.open("runtime_data/edge_candidate_value_counts.txt");
-  for (uint32_t i = 0; i < NUM_EQ * 2; ++i)
-  {
-    auto [u, v] = hq->evv[i];
-    if (hq->out_degree_[u] == 1)
-      continue;
-    uint32_t trie_id = lat.et2id[ettype().set(i >> 1)];
-    UnifiedTrie *trie = this->getTrie(trie_id);
-
-    // Get the number of keys (u candidates)
-    uint32_t num_keys = h_num_u_candidate_vs_[u];
-
-    // Get the offset array for this edge from HashTable
-    uint32_t edge_offset_start = ht.edge_offset_starts_[i];
-    offtype *d_edge_offsets = ht.d_offsets_ + edge_offset_start;
-
-    // Allocate host memory for offsets (num_keys + 1 elements)
-    offtype *h_offsets_ = new offtype[num_keys + 1];
-
-    // Copy offsets from device to host
-    cuchk(cudaMemcpyAsync(h_offsets_, d_edge_offsets, sizeof(offtype) * (num_keys + 1), cudaMemcpyDeviceToHost, construct_stream));
-    cuchk(cudaStreamSynchronize(construct_stream));
-
-    // Output header for this edge
-    outfile << "Edge " << (i >> 1) << " (directed edge " << i << "): u=" << u << ", v=" << v
-            << ", num_keys=" << num_keys << "\n";
-
-    // Output value count for each key
-    for (uint32_t key_idx = 0; key_idx < num_keys; ++key_idx)
-      outfile << h_offsets_[key_idx + 1] - h_offsets_[key_idx] << " ";
-    outfile << "\n";
-
-    // Output summary statistics
-    offtype total_pairs = h_offsets_[num_keys];
-    outfile << "  Total pairs: " << total_pairs << "\n";
-
-    if (num_keys > 0)
-    {
-      // Find min and max value counts
-      uint32_t min_count = UINT32_MAX;
-      uint32_t max_count = 0;
-      double avg_count = 0.0;
-      uint32_t zero_counter = 0;
-
-      for (uint32_t key_idx = 0; key_idx < num_keys; ++key_idx)
-      {
-        uint32_t count = h_offsets_[key_idx + 1] - h_offsets_[key_idx];
-        min_count = std::min(min_count, count);
-        max_count = std::max(max_count, count);
-        avg_count += count;
-        if (count == 0)
-          zero_counter++;
-      }
-      avg_count /= num_keys;
-
-      outfile << "  Zero value keys: " << zero_counter << "\n";
-      outfile << "  Min values per key: " << min_count << "\n";
-      outfile << "  Max values per key: " << max_count << "\n";
-      outfile << "  Avg values per key: " << avg_count << "\n";
-      outfile << "  Max from HashTable: " << ht.max_values_per_edge_[i] << "\n";
-    }
-
-    outfile << "\n";
-    delete[] h_offsets_;
-  }
-  outfile.close();
-#endif
-  cuchk(cudaStreamSynchronize(construct_stream));
-  // cuchk(cudaFreeAsync(d_scan_res, construct_stream));
+  mem_mgr.reset_stream();
   cuchk(cudaStreamDestroy(construct_stream));
 }

@@ -236,7 +236,9 @@ public:
   void linkMask(uint32_t target_id, uint32_t parent_id);
   void linkExpansion(uint32_t target_id, uint32_t parent_id, uint32_t num_new_rows, vtype new_u);
   std::vector<uint64_t *> &get_parent_arrays(uint32_t trie_id);
+  std::vector<uint64_t *> &get_parent_arrays(uint32_t trie_id, uint32_t up_to_col);
   std::vector<vtype *> &get_data_arrays(uint32_t trie_id);
+  std::vector<vtype *> &get_data_arrays(uint32_t trie_id, std::vector<uint32_t> &pin_cols);
 
   uint32_t getNumTries() const;
 
@@ -245,8 +247,9 @@ public:
       cpuGraph *hq, cpuGraph *hg, gpuGraph *dg,
       vtype *d_u_candidate_vs_, numtype *d_num_u_candidate_vs_, numtype *h_num_u_candidate_vs_,
       uint32_t *d_bitmap, uint32_t bitmap_pitch);
-  uint32_t find_best_edge_candidate(
-      const ettype &cur_et = ettype());
+
+  uint32_t find_best_edge_candidate(const ettype &cur_et = ettype());
+  uint32_t find_best_edge_candidate2(const ettype &cur_et = ettype());
 
   // Memory management
   void allocateAllData();

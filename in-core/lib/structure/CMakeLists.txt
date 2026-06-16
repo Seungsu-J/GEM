@@ -4,12 +4,17 @@ add_library(structure STATIC
   src/cuckooHash.cu
   src/unifiedTrie.cu
   src/construct_kernel.cu
+  src/policy.cpp
+  src/host_memory_manager.cu
   )
+
+  find_package(OpenMP REQUIRED)
 
   target_link_libraries(structure
     PUBLIC
       utils
       graph
+      OpenMP::OpenMP_CXX
   )
 
 target_include_directories(structure

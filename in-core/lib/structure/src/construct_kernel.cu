@@ -1181,6 +1181,63 @@ first_join_write_global_1_32(
 }
 
 __global__ void
+first_join_count_bitmap_task1_shared(
+    // data graph
+    offtype *offsets_, vtype *nbrs_, degtype *degree_,
+    uint32_t *d_bitmap_u_nbr, // bitmap from filter.
+    vtype u, numtype num_can_u, vtype *d_u_candidate_vs_,
+    uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t *workpool)
+{
+  const uint32_t tid = threadIdx.x;
+  const uint32_t bid = blockIdx.x;
+  const uint32_t idx = tid + bid * blockDim.x;
+  const uint32_t wid = tid >> 5;
+  const uint32_t lid = tid & 31;
+  const uint32_t wid_g = idx >> 5;
+
+  extern __shared__ vtype s_bitmap[];
+
+  uint32_t bitmap_pitch = (C_NUM_VD + 31) / 32;
+  for (int i = tid; i < bitmap_pitch; i += blockDim.x)
+  {
+    s_bitmap[i] = d_bitmap_u_nbr[i];
+  }
+  __syncthreads();
+
+  uint32_t v_off = wid_g; // idx in can(u)
+  vtype local_v;          // can(u)[task_id]
+  offtype nbr_off_st, nbr_off_ed, my_off;
+  vtype v_nbr;
+  bool found = false;
+  while (v_off < num_can_u)
+  {
+    local_v = fast_load(d_u_candidate_vs_ + v_off);
+    fast_load_pair(offsets_ + local_v, nbr_off_st, nbr_off_ed);
+
+    for (uint32_t base_off = nbr_off_st; base_off < nbr_off_ed; base_off += warpSize)
+    {
+      found = false;
+      my_off = base_off + lid;
+      if (my_off < nbr_off_ed)
+      {
+        v_nbr = fast_load(nbrs_ + my_off);
+        found = (s_bitmap[v_nbr >> 5] & (1u << (v_nbr & 31)));
+        // found = (d_bitmap_u_nbr[v_nbr >> 5] & (1u << (v_nbr & 31)));
+      }
+      uint32_t found_mask = __ballot_sync(FULL_MASK, found);
+      if (found_mask && lid == 0)
+        neighbor_mask_[neighbor_mask_offsets_[local_v] + (base_off - nbr_off_st) / 32] = found_mask;
+      __syncwarp();
+    }
+
+    // final
+    if (lid == 0)
+      v_off = atomicAdd(workpool, 1u);
+    v_off = __shfl_sync(FULL_MASK, v_off, 0);
+  }
+}
+
+__global__ void
 first_join_count_bitmap_task1(
     // data graph
     offtype *offsets_, vtype *nbrs_, degtype *degree_,
@@ -1226,6 +1283,76 @@ first_join_count_bitmap_task1(
     if (lid == 0)
       v_off = atomicAdd(workpool, 1u);
     v_off = __shfl_sync(FULL_MASK, v_off, 0);
+  }
+}
+
+__global__ void
+first_join_write_bitmap_task1_shared(
+    offtype *offsets_, vtype *nbrs_, degtype *degree_,
+    uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t *scan_result,
+    vtype u, numtype num_can_u, vtype *d_u_candidate_vs_,
+    vtype *d_res, offtype *d_offsets_each_row, uint64_t *d_parent_res,
+    uint32_t *workpool)
+{
+  const uint32_t tid = threadIdx.x;
+  const uint32_t bid = blockIdx.x;
+  const uint32_t idx = tid + bid * blockDim.x;
+  const uint32_t wid = tid >> 5;
+  const uint32_t lid = tid & 31;
+  const uint32_t wid_g = idx >> 5;
+
+  uint32_t task_id = wid_g; // idx in can(u)
+  uint32_t local_v;         // can(u)[task_id]
+  offtype local_off_st, offset_end;
+  while (task_id < num_can_u)
+  {
+    local_v = fast_load(d_u_candidate_vs_ + task_id);
+    fast_load_pair(offsets_ + local_v, local_off_st, offset_end);
+
+    for (uint32_t base_off = local_off_st; base_off < offset_end; base_off += warpSize)
+    {
+      uint32_t mask_idx = neighbor_mask_offsets_[local_v] + (base_off - local_off_st) / 32;
+      uint32_t mask = fast_load(neighbor_mask_ + mask_idx);
+      if (mask == 0)
+        continue; // Skip if no valid neighbors in this iteration
+      if (lid == 0)
+        neighbor_mask_[mask_idx] = 0; // reset for next use
+      __syncwarp();
+
+      uint32_t my_off = base_off + lid;
+      vtype v_nbr = UINT32_MAX;
+      bool found = false;
+
+      if (my_off < offset_end)
+      {
+        v_nbr = fast_load(nbrs_ + my_off);
+        // Get the bitmap mask offset for this neighbor position
+        found = (mask & (1u << lid));
+      }
+
+      // Aggregate found flags across the warp
+      uint32_t found_mask = __ballot_sync(FULL_MASK, found);
+
+      // Compute the base write offset from scan_result
+      uint32_t write_offset_base = fast_load(scan_result + mask_idx);
+
+      if (found)
+      {
+        // Compute rank within the warp
+        uint32_t my_rank = __popc(found_mask & ((1u << lid) - 1));
+        uint32_t write_pos = write_offset_base + my_rank;
+
+        // Write the result and parent
+        d_res[write_pos] = v_nbr;
+        d_parent_res[write_pos] = task_id;
+      }
+      __syncwarp();
+    }
+
+    // final
+    if (lid == 0)
+      task_id = atomicAdd(workpool, 1);
+    task_id = __shfl_sync(FULL_MASK, task_id, 0);
   }
 }
 

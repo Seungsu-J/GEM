@@ -1,9 +1,9 @@
 #include <algorithm>
+#include <cerrno>
 #include <charconv>
 #include <chrono>
-#include <cerrno>
-#include <cstring>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -35,20 +35,17 @@ using std::endl;
 
 namespace fs = std::filesystem;
 
-struct QueryJob
-{
+struct QueryJob {
   uint32_t id;
   std::string path;
 };
 
-struct BatchFailure
-{
+struct BatchFailure {
   QueryJob job;
   std::string detail;
 };
 
-static bool tryParseQueryId(const fs::path &query_path, uint32_t &out_id)
-{
+static bool tryParseQueryId(const fs::path &query_path, uint32_t &out_id) {
   const std::string stem = query_path.stem().string();
   if (stem.empty())
     return false;
@@ -63,7 +60,8 @@ static bool tryParseQueryId(const fs::path &query_path, uint32_t &out_id)
 
   std::string_view digits(stem.data() + pos, stem.size() - pos);
   uint32_t value = 0;
-  auto res = std::from_chars(digits.data(), digits.data() + digits.size(), value);
+  auto res =
+      std::from_chars(digits.data(), digits.data() + digits.size(), value);
   if (res.ec != std::errc() || res.ptr != digits.data() + digits.size())
     return false;
 
@@ -71,14 +69,13 @@ static bool tryParseQueryId(const fs::path &query_path, uint32_t &out_id)
   return true;
 }
 
-static std::vector<QueryJob> collectQueryJobs(const std::string &query_input, bool &is_directory)
-{
+static std::vector<QueryJob> collectQueryJobs(const std::string &query_input,
+                                              bool &is_directory) {
   std::vector<QueryJob> jobs;
   std::error_code ec;
   fs::path input_path(query_input);
 
-  if (fs::is_regular_file(input_path, ec))
-  {
+  if (fs::is_regular_file(input_path, ec)) {
     is_directory = false;
     uint32_t query_id = 0;
     if (!tryParseQueryId(input_path, query_id))
@@ -87,16 +84,15 @@ static std::vector<QueryJob> collectQueryJobs(const std::string &query_input, bo
     return jobs;
   }
 
-  if (!fs::is_directory(input_path, ec))
-  {
-    throw std::runtime_error("Query path is not a file or directory: " + query_input);
+  if (!fs::is_directory(input_path, ec)) {
+    throw std::runtime_error("Query path is not a file or directory: " +
+                             query_input);
   }
 
   is_directory = true;
 
   std::unordered_set<uint32_t> seen_ids;
-  for (const auto &entry : fs::directory_iterator(input_path))
-  {
+  for (const auto &entry : fs::directory_iterator(input_path)) {
     if (!entry.is_regular_file())
       continue;
 
@@ -105,32 +101,32 @@ static std::vector<QueryJob> collectQueryJobs(const std::string &query_input, bo
       continue;
 
     uint32_t query_id = 0;
-    if (!tryParseQueryId(p, query_id))
-    {
-      throw std::runtime_error("Query file does not match expected pattern Q_<id>.in: " + p.string());
+    if (!tryParseQueryId(p, query_id)) {
+      throw std::runtime_error(
+          "Query file does not match expected pattern Q_<id>.in: " +
+          p.string());
     }
 
-    if (!seen_ids.insert(query_id).second)
-    {
-      throw std::runtime_error("Duplicate query id " + std::to_string(query_id) + " in directory: " + query_input);
+    if (!seen_ids.insert(query_id).second) {
+      throw std::runtime_error("Duplicate query id " +
+                               std::to_string(query_id) +
+                               " in directory: " + query_input);
     }
 
     jobs.push_back({query_id, p.string()});
   }
 
-  std::sort(jobs.begin(), jobs.end(), [](const QueryJob &a, const QueryJob &b)
-            { return a.id < b.id; });
+  std::sort(jobs.begin(), jobs.end(),
+            [](const QueryJob &a, const QueryJob &b) { return a.id < b.id; });
   return jobs;
 }
 
 static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
                           const std::string &data_path, uint32_t gpu_num,
-                          const std::string &eviction_policy)
-{
+                          const std::string &eviction_policy) {
   (void)eviction_policy;
 
-  try
-  {
+  try {
     int device = static_cast<int>(gpu_num);
     cuchk(cudaSetDevice(device));
     cudaDeviceProp prop;
@@ -149,7 +145,8 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
 
     MemoryManager::initialize(optimal_limit);
     std::cout << "Memory Manager initialized with GPU memory limit: "
-              << (optimal_limit / 1024.0 / 1024.0 / 1024.0) << " GB" << std::endl;
+              << (optimal_limit / 1024.0 / 1024.0 / 1024.0) << " GB"
+              << std::endl;
     MemoryManager *mem_mgr = &MemoryManager::getInstance();
     VirtualEvictPolicy *eviction_policy_ptr = new LRUEvictPolicy();
     mem_mgr->set_eviction_policy(eviction_policy_ptr);
@@ -191,8 +188,10 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
 
     auto start_time = std::chrono::high_resolution_clock::now();
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
+    auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
 
     Lattice::initialize(hq.num_e);
     Lattice *lat = &Lattice::getInstance();
@@ -210,21 +209,23 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     vtype *h_u_candidate_vs_ = new vtype[NUM_VQ * MAX_L_FREQ];
     h_num_u_candidates_ = new numtype[NUM_VQ];
     mem_mgr->set_stream(&main_stream);
-    mem_mgr->allocate_permanent(d_u_candidate_vs_, sizeof(vtype) * NUM_VQ * MAX_L_FREQ);
+    mem_mgr->allocate_permanent(d_u_candidate_vs_,
+                                sizeof(vtype) * NUM_VQ * MAX_L_FREQ);
     mem_mgr->allocate_permanent(d_num_u_candidates_, sizeof(numtype) * NUM_VQ);
-    cuchk(cudaMemsetAsync(d_num_u_candidates_, 0, sizeof(numtype) * NUM_VQ, main_stream));
+    cuchk(cudaMemsetAsync(d_num_u_candidates_, 0, sizeof(numtype) * NUM_VQ,
+                          main_stream));
     cuchk(cudaStreamSynchronize(main_stream));
 
     start_time = std::chrono::high_resolution_clock::now();
-    filterSSM(&hq, &hg, nullptr, nullptr, h_u_candidate_vs_, h_num_u_candidates_,
-              d_u_candidate_vs_, d_num_u_candidates_, d_bitmap, bitmap_pitch);
+    filterSSM(&hq, &hg, nullptr, nullptr, h_u_candidate_vs_,
+              h_num_u_candidates_, d_u_candidate_vs_, d_num_u_candidates_,
+              d_bitmap, bitmap_pitch);
 #ifndef NDEBUG
     std::ofstream outfile("runtime_data/filter_output.txt");
-    for (uint32_t u = 0; u < NUM_VQ; u++)
-    {
-      outfile << "Vertex " << u << " has " << h_num_u_candidates_[u] << " candidates: ";
-      for (uint32_t i = 0; i < h_num_u_candidates_[u]; i++)
-      {
+    for (uint32_t u = 0; u < NUM_VQ; u++) {
+      outfile << "Vertex " << u << " has " << h_num_u_candidates_[u]
+              << " candidates: ";
+      for (uint32_t i = 0; i < h_num_u_candidates_[u]; i++) {
         outfile << h_u_candidate_vs_[u * MAX_L_FREQ + i] << " ";
       }
       outfile << std::endl;
@@ -232,25 +233,33 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     outfile.close();
 #endif
     end_time = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
     std::cout << "Filter time: " << duration.count() << " us" << std::endl;
 
     start_time = std::chrono::high_resolution_clock::now();
-    hash_table->build(&hq, h_num_u_candidates_, d_u_candidate_vs_, d_num_u_candidates_);
+    hash_table->build(&hq, h_num_u_candidates_, d_u_candidate_vs_,
+                      d_num_u_candidates_);
     end_time = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    std::cout << "Build Hash Table time: " << duration.count() << " us" << std::endl;
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
+    std::cout << "Build Hash Table time: " << duration.count() << " us"
+              << std::endl;
 
     start_time = std::chrono::high_resolution_clock::now();
     utm->initVertexTries(d_u_candidate_vs_, h_num_u_candidates_);
     end_time = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    std::cout << "initVertexTries time: " << duration.count() << " us" << std::endl;
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
+    std::cout << "initVertexTries time: " << duration.count() << " us"
+              << std::endl;
 
     start_time = std::chrono::high_resolution_clock::now();
-    utm->construct_edge_candidates_cpu(&hq, &hg, h_u_candidate_vs_, h_num_u_candidates_);
+    utm->construct_edge_candidates_cpu(&hq, &hg, h_u_candidate_vs_,
+                                       h_num_u_candidates_);
     end_time = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
     std::cout << "construct time: " << duration.count() << " us" << std::endl;
 
     size_t tries_bytes = utm->getTotalMemoryUsage();
@@ -279,21 +288,23 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     h_num_u_candidates_ = nullptr;
 
 #ifndef NDEBUG
-    std::cout << "\n=== Starting Join Operations with Transfer Optimization ===" << std::endl;
+    std::cout << "\n=== Starting Join Operations with Transfer Optimization ==="
+              << std::endl;
 #endif
 
     start_time = std::chrono::high_resolution_clock::now();
     join(&hq, &hg, &dg);
     end_time = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
+    duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        end_time - start_time);
 
     std::cout << "Join Time: " << duration.count() << " us" << std::endl;
     std::cout << "Join Time: " << duration_ms.count() << " ms" << std::endl;
 
     std::cout << "\n=== Final Results ===" << std::endl;
-    for (uint32_t rq_id : lat->computed_rq_ids)
-    {
+    for (uint32_t rq_id : lat->computed_rq_ids) {
       ettype rq_et = lat->id2et[rq_id];
       uint32_t match_count = utm->getTrie(rq_id)->num_results;
       std::cout << "Relaxed Query ET " << rq_et << ": " << match_count
@@ -303,12 +314,15 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
 
 #ifndef NDEBUG
     std::cout << "\n=== Summary ===" << std::endl;
-    std::cout << "Total computation time: " << duration.count() << " ms" << std::endl;
-    std::cout << "Generated " << et_set.size() << " edge type combinations" << std::endl;
-    std::cout << "GPU memory efficiently managed with transfer optimization." << std::endl;
+    std::cout << "Total computation time: " << duration.count() << " ms"
+              << std::endl;
+    std::cout << "Generated " << et_set.size() << " edge type combinations"
+              << std::endl;
+    std::cout << "GPU memory efficiently managed with transfer optimization."
+              << std::endl;
     std::cout << "\n=== Cleanup ===" << std::endl;
     std::cout << "Cleanup completed successfully." << std::endl;
-    std::cout << "\n=== FSSM Execution Completed ===" << std::endl;
+    std::cout << "\n=== GEM Execution Completed ===" << std::endl;
 #endif
 
     mem_mgr->set_stream(&main_stream);
@@ -323,39 +337,36 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     cuchk(cudaStreamDestroy(main_stream));
 
     return 0;
-  }
-  catch (const std::exception &e)
-  {
-    std::cerr << "ERROR: Query " << job.path << " failed: " << e.what() << std::endl;
+  } catch (const std::exception &e) {
+    std::cerr << "ERROR: Query " << job.path << " failed: " << e.what()
+              << std::endl;
     return 1;
   }
 }
 
-static int runDirectoryBatch(const std::vector<QueryJob> &query_jobs, cpuGraph &hg,
-                             const std::string &data_path, uint32_t gpu_num,
-                             const std::string &eviction_policy)
-{
+static int runDirectoryBatch(const std::vector<QueryJob> &query_jobs,
+                             cpuGraph &hg, const std::string &data_path,
+                             uint32_t gpu_num,
+                             const std::string &eviction_policy) {
   int success_count = 0;
   std::vector<BatchFailure> failures;
 
-  for (const auto &job : query_jobs)
-  {
+  for (const auto &job : query_jobs) {
     std::cout << job.id << std::endl;
     std::cout.flush();
     std::cerr.flush();
     std::fflush(nullptr);
 
     pid_t child_pid = fork();
-    if (child_pid < 0)
-    {
+    if (child_pid < 0) {
       std::cerr << "ERROR: fork() failed for query " << job.id << ": "
                 << std::strerror(errno) << std::endl;
       return 1;
     }
 
-    if (child_pid == 0)
-    {
-      const int exit_code = runSingleQuery(job, hg, data_path, gpu_num, eviction_policy);
+    if (child_pid == 0) {
+      const int exit_code =
+          runSingleQuery(job, hg, data_path, gpu_num, eviction_policy);
       std::cout.flush();
       std::cerr.flush();
       std::fflush(nullptr);
@@ -364,20 +375,17 @@ static int runDirectoryBatch(const std::vector<QueryJob> &query_jobs, cpuGraph &
 
     int status = 0;
     pid_t wait_result = -1;
-    do
-    {
+    do {
       wait_result = waitpid(child_pid, &status, 0);
     } while (wait_result < 0 && errno == EINTR);
 
-    if (wait_result < 0)
-    {
+    if (wait_result < 0) {
       std::cerr << "ERROR: waitpid() failed for query " << job.id << ": "
                 << std::strerror(errno) << std::endl;
       return 1;
     }
 
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-    {
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
       success_count++;
       continue;
     }
@@ -392,15 +400,14 @@ static int runDirectoryBatch(const std::vector<QueryJob> &query_jobs, cpuGraph &
 
     failures.push_back({job, detail});
     std::cout << "[batch-fail] query " << job.id
-              << " file=" << fs::path(job.path).filename().string()
-              << " " << detail << " continuing" << std::endl;
+              << " file=" << fs::path(job.path).filename().string() << " "
+              << detail << " continuing" << std::endl;
   }
 
   std::cout << "=== Batch Summary ===" << std::endl;
-  std::cout << "success=" << success_count
-            << " failed=" << failures.size() << std::endl;
-  for (const auto &failure : failures)
-  {
+  std::cout << "success=" << success_count << " failed=" << failures.size()
+            << std::endl;
+  for (const auto &failure : failures) {
     std::cout << "[failed] query " << failure.job.id
               << " file=" << fs::path(failure.job.path).filename().string()
               << " " << failure.detail << std::endl;
@@ -409,24 +416,24 @@ static int runDirectoryBatch(const std::vector<QueryJob> &query_jobs, cpuGraph &
   return 0;
 }
 
-int main(int argc, char **argv)
-{
-  CLI::App app{
-      "FSSM - Flexible Subgraph Similarity Matching with GPU Optimization"};
+int main(int argc, char **argv) {
+  CLI::App app{"GEM - Revisiting GPU-Accelerated Edge-Centric Subgraph "
+               "Matching on Large Graphs"};
 
   std::string query_input, data_path;
   uint32_t gpu_num = 0u;
   std::string eviction_policy = "lru";
-  THRESHOLD = 2;
+  THRESHOLD = 0;
 
-  app.add_option("-q,--query", query_input, "Query graph file or directory")->required();
+  app.add_option("-q,--query", query_input, "Query graph file or directory")
+      ->required();
   app.add_option("-d,--data", data_path, "Data graph path")->required();
   app.add_option("-g, --gpu", gpu_num, "GPU device number (default: 0)")
       ->default_val(0);
-  app.add_option("-t,--threshold", THRESHOLD,
-                 "Threshold for intermediate edge combinations (default: 2)")
-      ->check(CLI::Range(0, 10))
-      ->default_val(2);
+  // app.add_option("-t,--threshold", THRESHOLD,
+  //                "Threshold for intermediate edge combinations (default: 0)")
+  //     ->check(CLI::Range(0, 10))
+  //     ->default_val(0);
   app.add_option("--eviction", eviction_policy,
                  "Eviction policy: lru, contribution, hybrid (default: lru)");
 
@@ -434,18 +441,15 @@ int main(int argc, char **argv)
 
   bool query_is_directory = false;
   std::vector<QueryJob> query_jobs;
-  try
-  {
+  try {
     query_jobs = collectQueryJobs(query_input, query_is_directory);
-  }
-  catch (const std::exception &e)
-  {
+  } catch (const std::exception &e) {
     std::cerr << "ERROR: " << e.what() << std::endl;
     return 1;
   }
-  if (query_jobs.empty())
-  {
-    std::cerr << "ERROR: No query graphs found in: " << query_input << std::endl;
+  if (query_jobs.empty()) {
+    std::cerr << "ERROR: No query graphs found in: " << query_input
+              << std::endl;
     return 1;
   }
 
@@ -454,7 +458,8 @@ int main(int argc, char **argv)
   readGraphToCPUStandard(&hg, data_path.c_str());
 
   if (!query_is_directory)
-    return runSingleQuery(query_jobs.front(), hg, data_path, gpu_num, eviction_policy);
+    return runSingleQuery(query_jobs.front(), hg, data_path, gpu_num,
+                          eviction_policy);
 
   return runDirectoryBatch(query_jobs, hg, data_path, gpu_num, eviction_policy);
 }

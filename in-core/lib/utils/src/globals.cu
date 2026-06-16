@@ -45,3 +45,6 @@ __device__ __constant__ uint32_t C_TABLE_SIZE;
 
 __device__ __constant__ uint32_t C_THRESHOLD;
 __device__ __constant__ uint32_t C_QUERY_TYPE;
+
+// Host memory pool expansion time tracking (in milliseconds)
+double HOST_MEM_EXPANSION_TIME = 0.0;

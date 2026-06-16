@@ -56,6 +56,15 @@ __device__ __forceinline__ uint32_t fast_atomic_add(uint32_t *address, uint32_t 
   }
 }
 
+__device__ __forceinline__ vltype remapDataLabel(vltype original,
+                                                 const vltype *remap,
+                                                 vltype remap_size)
+{
+  if (remap != nullptr && original < remap_size)
+    return remap[original];
+  return C_NUM_VLQ;
+}
+
 // Performance monitoring structure
 struct KernelStats
 {
@@ -119,8 +128,9 @@ buildQueryNLCSSM_kernel(
   // }
 }
 
+// one warp - 32 data vertices.
 __global__ void
-LDfilterSSM_kernel(
+LDfilterSSM_kernel_workpool(
     degtype *query_out_degrees_,
     vltype *query_vLabels_,
     offtype *d_offsets_,
@@ -128,7 +138,454 @@ LDfilterSSM_kernel(
     vltype *d_v_labels_,
     degtype *d_v_degrees_,
     uint32_t *d_query_nlc_table_,
-    uint32_t *d_bitmap, uint32_t bitmap_pitch)
+    uint32_t *d_bitmap, uint32_t bitmap_pitch,
+    uint32_t *workpool,
+    const vltype *d_label_remap, vltype label_remap_size)
+{
+  const uint32_t tid = threadIdx.x;
+  const uint32_t bid = blockIdx.x;
+  const uint32_t idx = tid + bid * blockDim.x;
+  const uint32_t wid = tid >> 5;
+  const uint32_t lid = tid & 31;
+  const uint32_t wid_g = idx >> 5;
+
+  // Optimized shared memory layout for better bank conflict avoidance
+  __shared__ vltype s_q_vlabels[MAX_VQ];
+  __shared__ degtype s_q_degs[MAX_VQ];
+  __shared__ numtype s_q_nlc_table[MAX_VQ][MAX_VQ];
+  __shared__ uint32_t s_bitmap[MAX_VQ][WARP_PER_BLOCK];
+
+  // Each warp processes 32 vertices, each thread handles one vertex's NLC table
+  __shared__ uint32_t s_d_nlc_table[WARP_PER_BLOCK][32][MAX_VQ];
+
+  __shared__ uint32_t num_tasks[WARP_PER_BLOCK];
+  __shared__ uint32_t task_u[WARP_PER_BLOCK][MAX_VQ * 32];
+  __shared__ uint32_t task_v_off_32[WARP_PER_BLOCK][MAX_VQ * 32];
+  __shared__ uint32_t warp_bit[WARP_PER_BLOCK][MAX_VQ];
+
+  // Stride between iterations (all warps process 32 vertices each iteration)
+  // constexpr uint32_t warp_stride = GRID_DIM << 3 << 5; // GRID_DIM * WARP_PER_BLOCK * 32
+
+  vtype v_nbr_off_st, v_nbr_off_ed;
+  vtype bcast_v;
+  vltype data_vlabel = 0;
+  degtype data_deg = 0;
+
+  // Optimized shared memory loading with vectorized access
+  if (tid < C_NUM_VQ)
+  {
+    s_q_vlabels[tid] = fast_load(query_vLabels_ + tid);
+    s_q_degs[tid] = fast_load(query_out_degrees_ + tid);
+  }
+
+  for (int i = tid; i < C_NUM_VQ * C_NUM_VLQ; i += blockDim.x)
+  {
+    const int u_idx = i / C_NUM_VLQ;
+    const int vlabel_idx = i % C_NUM_VLQ;
+    s_q_nlc_table[u_idx][vlabel_idx] = fast_load(d_query_nlc_table_ + i);
+  }
+  __syncthreads();
+
+  uint32_t v_off_base = wid_g << 5;
+
+  // Main processing loop - each warp processes 32 vertices, each thread handles 1 vertex
+  // for (uint32_t v_off_base = wid_g << 5; v_off_base < C_NUM_VD; v_off_base += warp_stride)
+  while (v_off_base < C_NUM_VD)
+  {
+    // Initialize warp_bit for all query vertices
+    if (lid < C_NUM_VQ)
+      warp_bit[wid][lid] = 0;
+    if (lid == 0)
+      num_tasks[wid] = 0;
+    __syncwarp();
+
+    for (uint32_t v_seq = 0; v_seq < 32; ++v_seq)
+    {
+      bcast_v = v_off_base + v_seq;
+      if (bcast_v >= C_NUM_VD)
+        break;
+
+      data_vlabel = remapDataLabel(fast_load(d_v_labels_ + bcast_v), d_label_remap, label_remap_size);
+      data_deg = fast_load(d_v_degrees_ + bcast_v);
+
+      bool pass = false;
+      if (lid < C_NUM_VQ)
+        pass = (s_q_vlabels[lid] == data_vlabel) &&
+               (s_q_degs[lid] <= data_deg + C_THRESHOLD);
+
+      uint32_t data_v_pass = __ballot_sync(FULL_MASK, pass);
+      if (!data_v_pass)
+        continue;
+
+      if (lid < MAX_VLQ)
+        s_d_nlc_table[wid][v_seq][lid] = 0;
+      __syncwarp();
+
+      fast_load_pair(d_offsets_ + bcast_v, v_nbr_off_st, v_nbr_off_ed);
+
+      for (offtype nbr_off = v_nbr_off_st + lid; nbr_off < v_nbr_off_ed; nbr_off += warpSize)
+      {
+        const vtype v_nbr = fast_load(d_nbrs_ + nbr_off);
+        const vltype v_nbr_label = remapDataLabel(fast_load(d_v_labels_ + v_nbr), d_label_remap, label_remap_size);
+        if (v_nbr_label < C_NUM_VLQ)
+          atomicAdd(&s_d_nlc_table[wid][v_seq][v_nbr_label], 1);
+      }
+      __syncwarp();
+
+      if (pass)
+      {
+        uint32_t my_rank = __popc(data_v_pass & ((1u << lid) - 1));
+        uint32_t my_pos = num_tasks[wid] + my_rank;
+        task_u[wid][my_pos] = lid;
+        task_v_off_32[wid][my_pos] = v_seq;
+      }
+      __syncwarp();
+      if (lid == 0)
+        num_tasks[wid] += __popc(data_v_pass);
+      __syncwarp();
+    }
+
+    for (int task_id = lid; task_id < num_tasks[wid]; task_id += warpSize)
+    {
+      auto group = cooperative_groups::coalesced_threads();
+      vtype u = task_u[wid][task_id];
+      vtype v_seq = task_v_off_32[wid][task_id];
+      uint32_t total_diff = 0;
+      // #pragma unroll
+      for (int lbl = 0; lbl < C_NUM_VLQ; ++lbl)
+      {
+        const uint32_t q_count = s_q_nlc_table[u][lbl];
+        const uint32_t d_count = s_d_nlc_table[wid][v_seq][lbl];
+        const uint32_t diff = (q_count > d_count) ? (q_count - d_count) : 0;
+        total_diff += diff;
+      }
+      if (total_diff <= C_THRESHOLD)
+      {
+        atomicOr(&warp_bit[wid][u], (1u << v_seq));
+      }
+      group.sync();
+    }
+    __syncwarp();
+
+    if (num_tasks[wid] && lid < C_NUM_VQ && warp_bit[wid][lid])
+      d_bitmap[lid * bitmap_pitch + (v_off_base >> 5)] = warp_bit[wid][lid];
+    // atomicOr(&d_bitmap[lid * bitmap_pitch + (v_off_base >> 5)], warp_bit[wid][lid]);
+    __syncwarp();
+
+    if (lid == 0)
+      v_off_base = atomicAdd(workpool, 32);
+    v_off_base = __shfl_sync(FULL_MASK, v_off_base, 0);
+  }
+}
+
+// one warp - 32 data vertices.
+__global__ void
+LDfilterSSM_kernel_sequence(
+    degtype *query_out_degrees_,
+    vltype *query_vLabels_,
+    offtype *d_offsets_,
+    vtype *d_nbrs_,
+    vltype *d_v_labels_,
+    degtype *d_v_degrees_,
+    uint32_t *d_query_nlc_table_,
+    uint32_t *d_bitmap, uint32_t bitmap_pitch,
+    const vltype *d_label_remap, vltype label_remap_size)
+{
+  const uint32_t tid = threadIdx.x;
+  const uint32_t bid = blockIdx.x;
+  const uint32_t idx = tid + bid * blockDim.x;
+  const uint32_t wid = tid >> 5;
+  const uint32_t lid = tid & 31;
+  const uint32_t wid_g = idx >> 5;
+
+  // Optimized shared memory layout for better bank conflict avoidance
+  __shared__ vltype s_q_vlabels[MAX_VQ];
+  __shared__ degtype s_q_degs[MAX_VQ];
+  __shared__ numtype s_q_nlc_table[MAX_VQ][MAX_VQ];
+  __shared__ uint32_t s_bitmap[MAX_VQ][WARP_PER_BLOCK];
+
+  // Each warp processes 32 vertices, each thread handles one vertex's NLC table
+  __shared__ uint32_t s_d_nlc_table[WARP_PER_BLOCK][32][MAX_VQ];
+
+  __shared__ uint32_t num_tasks[WARP_PER_BLOCK];
+  __shared__ uint32_t task_u[WARP_PER_BLOCK][MAX_VQ * 32];
+  __shared__ uint32_t task_v_off_32[WARP_PER_BLOCK][MAX_VQ * 32];
+  __shared__ uint32_t warp_bit[WARP_PER_BLOCK][MAX_VQ];
+
+  // Stride between iterations (all warps process 32 vertices each iteration)
+  constexpr uint32_t warp_stride = GRID_DIM << 3 << 5; // GRID_DIM * WARP_PER_BLOCK * 32
+
+  vtype v_nbr_off_st, v_nbr_off_ed;
+  vtype bcast_v;
+  vltype data_vlabel = 0;
+  degtype data_deg = 0;
+
+  // Optimized shared memory loading with vectorized access
+  if (tid < C_NUM_VQ)
+  {
+    s_q_vlabels[tid] = fast_load(query_vLabels_ + tid);
+    s_q_degs[tid] = fast_load(query_out_degrees_ + tid);
+  }
+
+  for (int i = tid; i < C_NUM_VQ * C_NUM_VLQ; i += blockDim.x)
+  {
+    const int u_idx = i / C_NUM_VLQ;
+    const int vlabel_idx = i % C_NUM_VLQ;
+    s_q_nlc_table[u_idx][vlabel_idx] = fast_load(d_query_nlc_table_ + i);
+  }
+  __syncthreads();
+
+  // Main processing loop - each warp processes 32 vertices, each thread handles 1 vertex
+  for (uint32_t v_off_base = wid_g << 5; v_off_base < C_NUM_VD; v_off_base += warp_stride)
+  {
+    // Initialize warp_bit for all query vertices
+    if (lid < C_NUM_VQ)
+      warp_bit[wid][lid] = 0;
+    if (lid == 0)
+      num_tasks[wid] = 0;
+    __syncwarp();
+
+    for (uint32_t v_seq = 0; v_seq < 32; ++v_seq)
+    {
+      bcast_v = v_off_base + v_seq;
+      if (bcast_v >= C_NUM_VD)
+        break;
+
+      data_vlabel = remapDataLabel(fast_load(d_v_labels_ + bcast_v), d_label_remap, label_remap_size);
+      data_deg = fast_load(d_v_degrees_ + bcast_v);
+
+      bool pass = false;
+      if (lid < C_NUM_VQ)
+        pass = (s_q_vlabels[lid] == data_vlabel) &&
+               (s_q_degs[lid] <= data_deg + C_THRESHOLD);
+
+      uint32_t data_v_pass = __ballot_sync(FULL_MASK, pass);
+      if (!data_v_pass)
+        continue;
+
+      if (lid < MAX_VLQ)
+        s_d_nlc_table[wid][v_seq][lid] = 0;
+      __syncwarp();
+
+      fast_load_pair(d_offsets_ + bcast_v, v_nbr_off_st, v_nbr_off_ed);
+
+      for (offtype nbr_off = v_nbr_off_st + lid; nbr_off < v_nbr_off_ed; nbr_off += warpSize)
+      {
+        const vtype v_nbr = fast_load(d_nbrs_ + nbr_off);
+        const vltype v_nbr_label = remapDataLabel(fast_load(d_v_labels_ + v_nbr), d_label_remap, label_remap_size);
+        if (v_nbr_label < C_NUM_VLQ)
+          atomicAdd(&s_d_nlc_table[wid][v_seq][v_nbr_label], 1);
+      }
+      __syncwarp();
+
+      if (pass)
+      {
+        uint32_t my_rank = __popc(data_v_pass & ((1u << lid) - 1));
+        uint32_t my_pos = num_tasks[wid] + my_rank;
+        task_u[wid][my_pos] = lid;
+        task_v_off_32[wid][my_pos] = v_seq;
+      }
+      __syncwarp();
+      if (lid == 0)
+        num_tasks[wid] += __popc(data_v_pass);
+      __syncwarp();
+    }
+
+    for (int task_id = lid; task_id < num_tasks[wid]; task_id += warpSize)
+    {
+      auto group = cooperative_groups::coalesced_threads();
+      vtype u = task_u[wid][task_id];
+      vtype v_seq = task_v_off_32[wid][task_id];
+      uint32_t total_diff = 0;
+      // #pragma unroll
+      for (int lbl = 0; lbl < C_NUM_VLQ; ++lbl)
+      {
+        const uint32_t q_count = s_q_nlc_table[u][lbl];
+        const uint32_t d_count = s_d_nlc_table[wid][v_seq][lbl];
+        const uint32_t diff = (q_count > d_count) ? (q_count - d_count) : 0;
+        total_diff += diff;
+      }
+      if (total_diff <= C_THRESHOLD)
+      {
+        atomicOr(&warp_bit[wid][u], (1u << v_seq));
+      }
+      group.sync();
+    }
+    __syncwarp();
+
+    if (num_tasks[wid] && lid < C_NUM_VQ && warp_bit[wid][lid])
+      d_bitmap[lid * bitmap_pitch + (v_off_base >> 5)] = warp_bit[wid][lid];
+    // atomicOr(&d_bitmap[lid * bitmap_pitch + (v_off_base >> 5)], warp_bit[wid][lid]);
+    __syncwarp();
+  }
+}
+
+__global__ void
+LDfilterSSM_kernel_workpool_4(
+    degtype *query_out_degrees_,
+    vltype *query_vLabels_,
+    offtype *d_offsets_,
+    vtype *d_nbrs_,
+    vltype *d_v_labels_,
+    degtype *d_v_degrees_,
+    uint32_t *d_query_nlc_table_,
+    uint32_t *d_bitmap, uint32_t bitmap_pitch, uint32_t *workpool,
+    const vltype *d_label_remap, vltype label_remap_size)
+{
+  const uint32_t tid = threadIdx.x;
+  const uint32_t bid = blockIdx.x;
+  const uint32_t idx = tid + bid * blockDim.x;
+  const uint32_t wid = tid >> 5;
+  const uint32_t lid = tid & 31;
+  const uint32_t wid_g = idx >> 5;
+
+  // Optimized shared memory layout for better bank conflict avoidance
+  __shared__ vltype s_q_vlabels[MAX_VQ];
+  __shared__ degtype s_q_degs[MAX_VQ];
+  __shared__ uint32_t s_bitmap[MAX_VQ][WARP_PER_BLOCK];
+  __shared__ numtype s_q_nlc_table[MAX_VQ][MAX_VLQ];
+
+  __shared__ uint32_t s_d_nlc_table[WARP_PER_BLOCK][4][MAX_VLQ];
+
+  __shared__ uint32_t num_tasks[WARP_PER_BLOCK];
+  __shared__ uint32_t task_u[WARP_PER_BLOCK][MAX_VQ * 4];
+  __shared__ uint32_t task_v_off_4[WARP_PER_BLOCK][MAX_VQ * 4];
+  __shared__ uint32_t warp_bit[WARP_PER_BLOCK][MAX_VQ];
+  __shared__ uint32_t block_bit[WARP_PER_BLOCK][MAX_VQ];
+
+  // Stride between iterations (all warps process 4 vertices each iteration)
+  // const uint32_t warp_stride = gridDim.x * WARP_PER_BLOCK * 4;
+
+  uint32_t v_off_base = wid_g * 4;
+
+  vtype v_nbr_off_st, v_nbr_off_ed;
+  vtype bcast_v;
+  vltype data_vlabel = 0;
+  degtype data_deg = 0;
+
+  // Optimized shared memory loading with vectorized access
+  if (tid < C_NUM_VQ)
+  {
+    s_q_vlabels[tid] = fast_load(query_vLabels_ + tid);
+    s_q_degs[tid] = fast_load(query_out_degrees_ + tid);
+  }
+
+  for (int i = tid; i < C_NUM_VQ * C_NUM_VLQ; i += blockDim.x)
+  {
+    const int u_idx = i / C_NUM_VLQ;
+    const int vlabel_idx = i % C_NUM_VLQ;
+    s_q_nlc_table[u_idx][vlabel_idx] = fast_load(d_query_nlc_table_ + i);
+  }
+  __syncthreads();
+
+  // Main processing loop - each warp processes 4 vertices, then jumps by warp_stride
+  // for (uint32_t v_off_base = wid_g * 4; v_off_base < C_NUM_VD; v_off_base += warp_stride)
+  while (v_off_base < C_NUM_VD)
+  {
+    // Initialize warp_bit for all query vertices
+    if (lid < C_NUM_VQ)
+      warp_bit[wid][lid] = 0;
+    if (lid == 0)
+      num_tasks[wid] = 0;
+    __syncwarp();
+
+    // Process each of the 4 vertices sequentially to reuse shared NLC table
+    for (uint32_t v_seq = 0; v_seq < 4; ++v_seq)
+    {
+      bcast_v = v_off_base + v_seq;
+
+      if (bcast_v >= C_NUM_VD)
+        break;
+
+      // Load vertex properties with broadcast (no shared memory needed)
+      data_vlabel = remapDataLabel(fast_load(d_v_labels_ + bcast_v), d_label_remap, label_remap_size);
+      data_deg = fast_load(d_v_degrees_ + bcast_v);
+
+      // early check
+      bool pass = false;
+      if (lid < C_NUM_VQ)
+        pass =
+            (s_q_vlabels[lid] == data_vlabel) &&
+            (s_q_degs[lid] <= data_deg + C_THRESHOLD);
+
+      uint32_t data_v_pass = __ballot_sync(FULL_MASK, pass);
+      if (!data_v_pass)
+        continue;
+
+      // Initialize shared NLC table for this data vertex
+      if (lid < MAX_VLQ)
+        s_d_nlc_table[wid][v_seq][lid] = 0;
+      __syncwarp();
+
+      fast_load_pair(&d_offsets_[bcast_v], v_nbr_off_st, v_nbr_off_ed);
+
+      // Build NLC table - all threads collaborate
+      for (offtype nbr_off = v_nbr_off_st + lid; nbr_off < v_nbr_off_ed; nbr_off += warpSize)
+      {
+        const vtype v_nbr = fast_load(d_nbrs_ + nbr_off);
+        const vltype v_nbr_label = remapDataLabel(fast_load(d_v_labels_ + v_nbr), d_label_remap, label_remap_size);
+        if (v_nbr_label < C_NUM_VLQ)
+          atomicAdd(&s_d_nlc_table[wid][v_seq][v_nbr_label], 1);
+      }
+      __syncwarp();
+
+      if (pass)
+      {
+        uint32_t my_rank = __popc(data_v_pass & ((1u << lid) - 1));
+        uint32_t my_pos = num_tasks[wid] + my_rank;
+        task_u[wid][my_pos] = lid;
+        task_v_off_4[wid][my_pos] = v_seq;
+      }
+      __syncwarp();
+      if (lid == 0)
+        num_tasks[wid] += __popc(data_v_pass);
+      __syncwarp();
+    }
+
+    for (int task_id = lid; task_id < num_tasks[wid]; task_id += warpSize)
+    {
+      auto group = cooperative_groups::coalesced_threads();
+      vtype u = task_u[wid][task_id];
+      vtype v_seq = task_v_off_4[wid][task_id];
+      uint32_t total_diff = 0;
+      // #pragma unroll
+      for (int lbl = 0; lbl < C_NUM_VLQ; ++lbl)
+      {
+        const uint32_t q_count = s_q_nlc_table[u][lbl];
+        const uint32_t d_count = s_d_nlc_table[wid][v_seq][lbl];
+        const uint32_t diff = (q_count > d_count) ? (q_count - d_count) : 0;
+        total_diff += diff;
+      }
+      if (total_diff <= C_THRESHOLD)
+      {
+        atomicOr(&warp_bit[wid][u], (1u << v_seq << (wid * 4)));
+        // atomicOr(&warp_bit[wid][u], (1u << ((v_off_base | v_seq) & 31)));
+      }
+      group.sync();
+    }
+    __syncwarp();
+
+    if (num_tasks[wid] && lid < C_NUM_VQ && warp_bit[wid][lid])
+      atomicOr(&d_bitmap[lid * bitmap_pitch + (v_off_base >> 5)], warp_bit[wid][lid]);
+    __syncwarp();
+
+    if (lid == 0)
+      v_off_base = atomicAdd(workpool, 4);
+    v_off_base = __shfl_sync(FULL_MASK, v_off_base, 0);
+  }
+}
+
+__global__ void
+LDfilterSSM_kernel_4(
+    degtype *query_out_degrees_,
+    vltype *query_vLabels_,
+    offtype *d_offsets_,
+    vtype *d_nbrs_,
+    vltype *d_v_labels_,
+    degtype *d_v_degrees_,
+    uint32_t *d_query_nlc_table_,
+    uint32_t *d_bitmap, uint32_t bitmap_pitch,
+    const vltype *d_label_remap, vltype label_remap_size)
 {
   const uint32_t tid = threadIdx.x;
   const uint32_t bid = blockIdx.x;
@@ -194,7 +651,7 @@ LDfilterSSM_kernel(
         break;
 
       // Load vertex properties with broadcast (no shared memory needed)
-      data_vlabel = fast_load(d_v_labels_ + bcast_v);
+      data_vlabel = remapDataLabel(fast_load(d_v_labels_ + bcast_v), d_label_remap, label_remap_size);
       data_deg = fast_load(d_v_degrees_ + bcast_v);
 
       // early check
@@ -219,7 +676,7 @@ LDfilterSSM_kernel(
       for (offtype nbr_off = v_nbr_off_st + lid; nbr_off < v_nbr_off_ed; nbr_off += warpSize)
       {
         const vtype v_nbr = fast_load(d_nbrs_ + nbr_off);
-        const vltype v_nbr_label = fast_load(d_v_labels_ + v_nbr);
+        const vltype v_nbr_label = remapDataLabel(fast_load(d_v_labels_ + v_nbr), d_label_remap, label_remap_size);
         if (v_nbr_label < C_NUM_VLQ)
           atomicAdd(&s_d_nlc_table[wid][v_seq][v_nbr_label], 1);
       }
@@ -264,21 +721,6 @@ LDfilterSSM_kernel(
     if (num_tasks[wid] && lid < C_NUM_VQ && warp_bit[wid][lid])
       atomicOr(&d_bitmap[lid * bitmap_pitch + (v_off_base >> 5)], warp_bit[wid][lid]);
     __syncwarp();
-
-    // __syncthreads();
-
-    // if ((wid & 1) == 0 && lid < C_NUM_VQ)
-    // warp_bit[wid][lid] |= warp_bit[wid + 1][lid];
-    // __syncthreads();
-    // if ((wid & 3) == 0 && lid < C_NUM_VQ)
-    // warp_bit[wid][lid] |= warp_bit[wid + 2][lid];
-    // __syncthreads();
-    // if (wid == 0 && lid < C_NUM_VQ)
-    // warp_bit[0][lid] |= warp_bit[4][lid];
-    // __syncthreads();
-    // if (tid < C_NUM_VQ)
-    // d_bitmap[tid * bitmap_pitch + (v_off_base >> 5)] = warp_bit[0][tid];
-    // __syncthreads();
   }
 }
 

@@ -7,9 +7,12 @@
 
 #include <cstddef>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 
 struct timespec timespec_diff(struct timespec start, struct timespec end);
-void aggressive_warmup(int var_device_id, cudaStream_t stream, size_t safety_buffer_mb = 500);
+size_t aggressive_warmup(int var_device_id, cudaStream_t stream, size_t safety_buffer_mb);
+size_t getSafePinnedMemorySize();
 
 #define FULL_MASK 0xffffffff
 
@@ -22,16 +25,52 @@ void aggressive_warmup(int var_device_id, cudaStream_t stream, size_t safety_buf
     gpuAssert((ans), __FILE__, __LINE__); \
   }
 
+class CudaException : public std::runtime_error
+{
+public:
+  CudaException(cudaError_t code, const char *file, int line)
+      : std::runtime_error(buildMessage(code, file, line)),
+        code_(code),
+        file_(file),
+        line_(line)
+  {
+  }
+
+  cudaError_t code() const noexcept { return code_; }
+  const char *file() const noexcept { return file_; }
+  int line() const noexcept { return line_; }
+
+private:
+  cudaError_t code_;
+  const char *file_;
+  int line_;
+
+  static std::string buildMessage(cudaError_t code, const char *file, int line)
+  {
+    std::string msg = "CUDA error: ";
+    const char *name = cudaGetErrorName(code);
+    const char *desc = cudaGetErrorString(code);
+    msg += (name != nullptr) ? name : "UNKNOWN";
+    msg += " ";
+    msg += (desc != nullptr) ? desc : "";
+    msg += " at ";
+    msg += (file != nullptr) ? file : "<unknown>";
+    msg += ":";
+    msg += std::to_string(line);
+    return msg;
+  }
+};
+
 inline void gpuAssert(cudaError_t code, const char *file, int line,
                       bool abort = true)
 {
   if (code != cudaSuccess)
   {
-    std::cerr << "GPU assert: " << cudaGetErrorName(code) << " "
+    std::cout << "GPU assert: " << cudaGetErrorName(code) << " "
               << cudaGetErrorString(code) << " " << file << " " << line << " "
               << std::endl;
     if (abort)
-      exit(code);
+      throw CudaException(code, file, line);
   }
 }
 
@@ -40,7 +79,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line,
     cudaError_t cucheck_err = (call);                 \
     if (cucheck_err != cudaSuccess)                   \
     {                                                 \
-      std::cerr << __FILE__ << " " << __LINE__ << " " \
+      std::cout << __FILE__ << " " << __LINE__ << " " \
                 << cudaGetErrorString(cucheck_err);   \
       assert(0);                                      \
     }                                                 \

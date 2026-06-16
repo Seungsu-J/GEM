@@ -56,4 +56,7 @@ extern uint32_t QUERY_TYPE;
 
 extern __device__ __constant__ uint32_t C_QUERY_TYPE;
 
+// Host memory pool expansion time tracking (in milliseconds)
+extern double HOST_MEM_EXPANSION_TIME;
+
 #endif

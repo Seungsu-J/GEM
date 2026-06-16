@@ -8,7 +8,6 @@ target_link_libraries(filter
     utils
     graph
     structure
-    join
 )
 
 target_include_directories(filter

@@ -16,7 +16,7 @@ Compilation and execution scripts are the same for both.
 
 Before the compilation, please set the proper compute capability number according to your GPU device. If not sure, please refer to: [CUDA GPU Compute Capability](https://developer.nvidia.com/cuda/gpus). 
 
-Only two places need adjusting:
+Only two places need adjusting in the root `CMakeLists.txt` (`in-core/CMakeLists.txt` and `out-of-core/CMakeLists.txt`):
 
 ```CMake
 set(CMAKE_CUDA_LIBRARY_ARCHITECTURES 86) # A6000
@@ -31,11 +31,11 @@ mkdir build
 bash build.sh
 ```
 
-Debug and Release version of executables will be built, and they are in `./build/debug/GEM` and `./build/release/GEM` respectively.
+Debug and Release version of executables will be built, and they will be in `./build/debug/GEM` and `./build/release/GEM` respectively.
 
 # 3. Execution
 
-One can run `GEM` by this command:
+One can run `GEM` by the command:
 
 ```bash
 GEM -q <path/to/query_graph> -d <path/to/data_graph> --gpu <gpu_card_id> >> output_file.txt
@@ -48,7 +48,9 @@ GEM -q <path/to/query_graph_folder> -d <path/to/data_graph> --gpu <gpu_card_id> 
 ```
 
 `path/to/query_graph` or `path/to_query_graph_folder` and `path/to/data_graph` is required. 
+
 `gpu_card_id` is 0 by default. 
+
 If no output_file.txt is set, GEM uses standard output (terminal). 
 
 In addition, one can simply conduct the experiments using the pre-written script `script.sh` with adjustments. 

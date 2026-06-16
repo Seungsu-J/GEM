@@ -6,6 +6,7 @@ target_link_libraries(io
   PUBLIC
     utils
     graph
+    structure
 )
 
 target_include_directories(io

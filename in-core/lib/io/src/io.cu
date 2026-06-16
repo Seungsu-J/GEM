@@ -2,10 +2,12 @@
 #include "globals.h"
 #include "cuda_helpers.cuh"
 #include "FastFileReader.hpp"
+#include "memory_manager.cuh"
 
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <stdexcept>
 #include <cstring>
 #include <stdlib.h>
 #include <cstdio>
@@ -55,11 +57,10 @@ void readGraphToCPUStandard(
 		numtype num_v = reader.read_integer<numtype>();
 		numtype num_e = reader.read_integer<numtype>();
 
-		if (type != 't')
-		{
-			cerr << "Error: Expected 't' at the beginning, found " << type << endl;
-			exit(1);
-		}
+			if (type != 't')
+			{
+				throw std::runtime_error(std::string("Error: Expected 't' at the beginning, found ") + type);
+			}
 
 		graph->num_v = num_v;
 		graph->num_e = num_e;
@@ -80,7 +81,6 @@ void readGraphToCPUStandard(
 		etype eid_global = 0;
 
 		int vlcount = cpuGraph::vlmapo2n.size();		// now 0
-		int tot_labels = cpuGraph::vlmapn2o.size(); // now 0
 
 		// Batch read vertices for better performance
 		std::vector<std::tuple<vtype, vltype, degtype>> vertices;
@@ -120,9 +120,9 @@ void readGraphToCPUStandard(
 			}
 			else
 			{
-				cerr << "Error: Invalid type '" << (int)current_type << "' (char: '" << current_type << "')" << endl;
-				cerr << "Expected 'v' for vertex or 'e' for edge" << endl;
-				exit(1);
+				throw std::runtime_error("Error: Invalid type '" + std::to_string((int)current_type) +
+																 "' (char: '" + std::string(1, current_type) +
+																 "'), expected 'v' or 'e'");
 			}
 		}
 
@@ -148,16 +148,10 @@ void readGraphToCPUStandard(
 			}
 			else
 			{
-				auto it = cpuGraph::vlmapo2n.find(vLabel);
-				if (it == cpuGraph::vlmapo2n.end())
-				{
-					vLabel = tot_labels;
-					useful = false;
-				}
-				else
-				{
-					vLabel = it->second;
-				}
+				// Keep original labels for the data graph. Query-specific label remapping is
+				// applied inside filtering to support processing many queries against one
+				// loaded data graph.
+				useful = true;
 			}
 
 			graph->vertexIDs_[vid] = vid;
@@ -199,10 +193,6 @@ void readGraphToCPUStandard(
 		}
 
 		graph->num_v_labels = graph->vLabelFreq.size();
-		if (!graph->isQuery)
-		{
-			graph->num_v_labels++;
-		}
 
 		// graph->maxLabelFreq = 0;
 		for (const auto &l_c : graph->vLabelFreq)
@@ -212,12 +202,11 @@ void readGraphToCPUStandard(
 			for (int i = 0; i < graph->num_e; ++i)
 				graph->edgeTag.set(i);
 	}
-	catch (const std::exception &e)
-	{
-		cerr << "Error reading graph file: " << e.what() << endl;
-		exit(1);
+		catch (const std::exception &e)
+		{
+			throw std::runtime_error(std::string("Error reading graph file: ") + e.what());
+		}
 	}
-}
 
 void readGraphToCPU_CStyle(
 		cpuGraph *graph,
@@ -232,11 +221,10 @@ void readGraphToCPU_CStyle(
 		numtype num_v = reader.read_integer<numtype>();
 		numtype num_e = reader.read_integer<numtype>();
 
-		if (type != 't')
-		{
-			cerr << "Error: Expected 't' at the beginning, found " << type << endl;
-			exit(1);
-		}
+			if (type != 't')
+			{
+				throw std::runtime_error(std::string("Error: Expected 't' at the beginning, found ") + type);
+			}
 
 		graph->num_v = num_v;
 		graph->num_e = num_e;
@@ -316,13 +304,13 @@ void readGraphToCPU_CStyle(
 
 				eid_global += 2;
 			}
-			else
-			{
-				cerr << "Error: Invalid type '" << (int)current_type << "' (char: '" << current_type << "')" << endl;
-				cerr << "Expected 'v' for vertex or 'e' for edge" << endl;
-				exit(1);
+				else
+				{
+					throw std::runtime_error("Error: Invalid type '" + std::to_string((int)current_type) +
+																	 "' (char: '" + std::string(1, current_type) +
+																	 "'), expected 'v' or 'e'");
+				}
 			}
-		}
 
 		for (const auto &l_c : graph->vLabelFreq)
 		{
@@ -337,12 +325,11 @@ void readGraphToCPU_CStyle(
 			}
 		}
 	}
-	catch (const std::exception &e)
-	{
-		cerr << "Error reading graph file: " << e.what() << endl;
-		exit(1);
+		catch (const std::exception &e)
+		{
+			throw std::runtime_error(std::string("Error reading graph file: ") + e.what());
+		}
 	}
-}
 
 // Optimized GPU memory allocation with error checking and performance improvements
 void allocateMemGPU(
@@ -352,9 +339,14 @@ void allocateMemGPU(
 	const uint32_t num = cpuGraph->isQuery ? NUM_VQ : cpuGraph->num_v;
 	const size_t edge_count = cpuGraph->num_e << 1;
 
-	// Allocate memory with proper alignment and error checking
+	auto &mem_mgr = MemoryManager::getInstance();
+
+	void *raw_space = nullptr;
+	cudaStream_t stream = nullptr;
+
 	try
 	{
+		// Allocate memory with proper alignment and error checking
 		// Define the alignment you want. 128 is a common safe choice for GPU memory.
 		const size_t alignment = 128;
 
@@ -374,13 +366,16 @@ void allocateMemGPU(
 		// The total memory to allocate is the start of the last array plus its size
 		size_t mem_to_allocate = neighbor_offset + neighbor_size;
 
-		// Use char* for byte-level pointer arithmetic
-		char *dev_space = nullptr;
-		cudaStream_t stream;
+		// Use char* for byte-level pointer arithmetic+
+
+		uint8_t *dev_space = nullptr;
 		cuchk(cudaStreamCreate(&stream));
-		cuchk(cudaMallocAsync(reinterpret_cast<void **>(&dev_space), mem_to_allocate, stream));
-		cuchk(cudaStreamSynchronize(stream));
-		cuchk(cudaStreamDestroy(stream));
+		mem_mgr.set_stream(&stream);
+		if (!mem_mgr.allocate_permanent(raw_space, mem_to_allocate))
+		{
+			throw std::runtime_error("allocateMemGPU: failed to allocate GPU buffer.");
+		}
+		dev_space = static_cast<uint8_t *>(raw_space);
 
 		// Assign pointers using the calculated aligned offsets
 		gpuGraph->degree_ = reinterpret_cast<degtype *>(dev_space + degree_offset);
@@ -388,6 +383,9 @@ void allocateMemGPU(
 		gpuGraph->offsets_ = reinterpret_cast<offtype *>(dev_space + offset_list_offset);
 		gpuGraph->neighbors_ = reinterpret_cast<vtype *>(dev_space + neighbor_offset);
 
+		cuchk(cudaStreamSynchronize(stream));
+		mem_mgr.reset_stream();
+		cuchk(cudaStreamDestroy(stream));
 		// Initialize allocated memory to zero for better debugging
 		//! no need to initialize memory to zero here, as it will be filled later by `copyGraphToGPU()`
 
@@ -398,8 +396,35 @@ void allocateMemGPU(
 	}
 	catch (const std::exception &e)
 	{
-		cerr << "Error allocating GPU memory: " << e.what() << endl;
-		exit(1);
+		try
+		{
+			if (raw_space != nullptr)
+			{
+				mem_mgr.set_stream(&stream);
+				mem_mgr.deallocate_permanent(raw_space);
+			}
+		}
+		catch (...)
+		{
+		}
+		try
+		{
+			mem_mgr.reset_stream();
+		}
+		catch (...)
+		{
+		}
+		if (stream != nullptr)
+		{
+			cudaStreamDestroy(stream);
+			stream = nullptr;
+		}
+		gpuGraph->degree_ = nullptr;
+		gpuGraph->vLabels_ = nullptr;
+		gpuGraph->offsets_ = nullptr;
+		gpuGraph->neighbors_ = nullptr;
+		gpuGraph->edgeIDs_ = nullptr;
+		throw std::runtime_error(std::string("Error allocating GPU memory: ") + e.what());
 	}
 }
 
@@ -412,7 +437,7 @@ void copyGraphToGPU(
 	const size_t edge_count = cpuGraph->num_e * 2;
 
 	// Create CUDA stream for asynchronous operations
-	cudaStream_t stream;
+	cudaStream_t stream = nullptr;
 	cuchk(cudaStreamCreate(&stream));
 
 	try
@@ -443,8 +468,12 @@ void copyGraphToGPU(
 	}
 	catch (const std::exception &e)
 	{
-		cerr << "Error copying graph to GPU: " << e.what() << endl;
-		exit(1);
+		if (stream != nullptr)
+		{
+			cudaStreamDestroy(stream);
+			stream = nullptr;
+		}
+		throw std::runtime_error(std::string("Error copying graph to GPU: ") + e.what());
 	}
 
 	// Clean up stream
@@ -453,14 +482,14 @@ void copyGraphToGPU(
 
 // Optimized GPU to CPU copy with async operations
 void copyGraphToCPU(
-		gpuGraph *gpuGraph,
-		cpuGraph *cpuGraph)
+			gpuGraph *gpuGraph,
+			cpuGraph *cpuGraph)
 {
 	const uint32_t num = NUM_VQ;
 	const size_t edge_count = cpuGraph->num_e * 2;
 
 	// Create CUDA stream for asynchronous operations
-	cudaStream_t stream;
+	cudaStream_t stream = nullptr;
 	cuchk(cudaStreamCreate(&stream));
 
 	try
@@ -491,8 +520,12 @@ void copyGraphToCPU(
 	}
 	catch (const std::exception &e)
 	{
-		cerr << "Error copying graph from GPU: " << e.what() << endl;
-		exit(1);
+		if (stream != nullptr)
+		{
+			cudaStreamDestroy(stream);
+			stream = nullptr;
+		}
+		throw std::runtime_error(std::string("Error copying graph from GPU: ") + e.what());
 	}
 
 	// Clean up stream
@@ -507,7 +540,20 @@ void copyMeta(cpuGraph *query, cpuGraph *data)
 	NUM_EQ = query->num_e;
 	NUM_VLQ = query->num_v_labels;
 
-	MAX_L_FREQ = data->maxLabelFreq;
+	// MAX_L_FREQ is query-dependent: maximum candidate size among query labels.
+	MAX_L_FREQ = 0;
+	for (const auto &kv : query->vLabelFreq)
+	{
+		const vltype query_label_id = kv.first;
+		auto it_orig = cpuGraph::vlmapn2o.find(query_label_id);
+		if (it_orig == cpuGraph::vlmapn2o.end())
+			continue;
+		const vltype orig_label = it_orig->second;
+		auto it_freq = data->vLabelFreq.find(orig_label);
+		if (it_freq != data->vLabelFreq.end())
+			MAX_L_FREQ = std::max(MAX_L_FREQ, it_freq->second);
+	}
+
 	MAX_DATA_DEGREE = data->maxDegree;
 
 	NUM_VD = data->num_v;
@@ -515,17 +561,17 @@ void copyMeta(cpuGraph *query, cpuGraph *data)
 	COL_LEN = (NUM_VD - 1) / 32 + 1;
 
 	// Batch copy all constants to GPU device memory for better performance
+	// Create array of values for batch copy
+	const uint32_t constants[] = {
+			NUM_VQ, NUM_EQ, NUM_VLQ, MAX_L_FREQ, MAX_DATA_DEGREE,
+			NUM_VD, NUM_ED, COL_LEN, QUERY_TYPE, THRESHOLD};
+
+	// Use async copies for better performance
+	cudaStream_t stream = nullptr;
+	cuchk(cudaStreamCreate(&stream));
+
 	try
 	{
-		// Create array of values for batch copy
-		const uint32_t constants[] = {
-				NUM_VQ, NUM_EQ, NUM_VLQ, MAX_L_FREQ, MAX_DATA_DEGREE,
-				NUM_VD, NUM_ED, COL_LEN, QUERY_TYPE, THRESHOLD};
-
-		// Use async copies for better performance
-		cudaStream_t stream;
-		cuchk(cudaStreamCreate(&stream));
-
 		cuchk(cudaMemcpyToSymbolAsync(C_NUM_VQ, &constants[0], sizeof(uint32_t), 0,
 																	cudaMemcpyHostToDevice, stream));
 		cuchk(cudaMemcpyToSymbolAsync(C_NUM_EQ, &constants[1], sizeof(uint32_t), 0,
@@ -549,11 +595,16 @@ void copyMeta(cpuGraph *query, cpuGraph *data)
 
 		// Synchronize to ensure all copies complete
 		cuchk(cudaStreamSynchronize(stream));
-		cuchk(cudaStreamDestroy(stream));
 	}
 	catch (const std::exception &e)
 	{
-		cerr << "Error copying metadata to GPU: " << e.what() << endl;
-		exit(1);
+		if (stream != nullptr)
+		{
+			cudaStreamDestroy(stream);
+			stream = nullptr;
+		}
+		throw std::runtime_error(std::string("Error copying metadata to GPU: ") + e.what());
 	}
+
+	cuchk(cudaStreamDestroy(stream));
 }

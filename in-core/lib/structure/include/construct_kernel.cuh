@@ -114,7 +114,14 @@ first_join_write_global_1_32(
     uint64_t *d_parent_res);
 
 __global__ void
-first_join_count_bitmap_task1(
+first_join_count_bitmap_task1_shared(
+    // data graph
+    offtype *offsets_, vtype *nbrs_, degtype *degree_,
+    uint32_t *d_bitmap_u_nbr, // bitmap from filter.
+    vtype u, numtype num_can_u, vtype *d_u_candidate_vs_,
+    uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t *workpool);
+
+__global__ void first_join_count_bitmap_task1(
     // data graph
     offtype *offsets_, vtype *nbrs_, degtype *degree_,
     uint32_t *d_bitmap_u_nbr, // bitmap from filter.
@@ -122,23 +129,34 @@ first_join_count_bitmap_task1(
     uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t *workpool);
 
 __global__ void
-first_join_write_bitmap_task1(
+first_join_write_bitmap_task1_shared(
     offtype *offsets_, vtype *nbrs_, degtype *degree_,
-    uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t* scan_result,
+    uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t *scan_result,
     vtype u, numtype num_can_u, vtype *d_u_candidate_vs_,
     vtype *d_res, offtype *d_offsets_each_row, uint64_t *d_parent_res,
     uint32_t *workpool);
 
-__global__ void getMax(
+__global__ void
+first_join_write_bitmap_task1(
+    offtype *offsets_, vtype *nbrs_, degtype *degree_,
+    uint32_t *neighbor_mask_, uint32_t *neighbor_mask_offsets_, uint32_t *scan_result,
+    vtype u, numtype num_can_u, vtype *d_u_candidate_vs_,
+    vtype *d_res, offtype *d_offsets_each_row, uint64_t *d_parent_res,
+    uint32_t *workpool);
+
+__global__ void
+getMax(
     vtype *d_u_candidate_vs_, uint32_t num_can_u,
     uint32_t *scan_output, uint32_t *neighbor_mask_offsets_,
     uint32_t *dst, uint32_t *d_edge_offsets);
 
 // launch by <<<1,1>>>
-__global__ void add_last_for_exclusive_sum_div32ceil(
+__global__ void
+add_last_for_exclusive_sum_div32ceil(
     uint32_t *org_data_array, uint32_t *scan_output_array, uint32_t org_length, uint32_t *dst);
 
 // launch by <<<1,1>>>
-__global__ void add_last_for_exclusive_sum_popc(
+__global__ void
+add_last_for_exclusive_sum_popc(
     uint32_t *org_data_array, uint32_t *scan_output_array, uint32_t org_length, uint32_t *dst);
 #endif

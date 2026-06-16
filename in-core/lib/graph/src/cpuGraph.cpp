@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cassert>
 #include <memory>
+#include <stdexcept>
+#include <string>
 
 // Static member definitions
 std::unordered_map<vltype, vltype> cpuGraph::vlmapo2n;
@@ -68,7 +70,8 @@ uint32_t cpuGraph::get_u_off(vtype u)
   std::cerr << "ERROR! in get_u_off(): vertex " << u << " not found in graph with "
             << vertex_count << " vertices" << std::endl;
   assert(false && "Vertex not found in graph");
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error("cpuGraph::get_u_off(): vertex " + std::to_string(u) +
+                           " not found in graph with " + std::to_string(vertex_count) + " vertices");
 }
 
 bool cpuGraph::check_connectivity(ettype tag)

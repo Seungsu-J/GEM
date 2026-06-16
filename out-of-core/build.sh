@@ -3,7 +3,7 @@
 
 set -e  # Exit on error
 
-echo "Building FleSSM in both Debug and Release modes..."
+echo "Building GEM in both Debug and Release modes..."
 
 # Build Debug version
 echo ""
@@ -18,10 +18,10 @@ cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release -j8
 
 echo ""
-echo "=== Copying debug executable to build/ ==="
-cp build/debug/FleSSM build/FleSSM
+echo "=== Copying release executable to build/ ==="
+cp build/release/GEM build/GEM
 
 echo ""
 echo "=== Build Complete ==="
-echo "Debug executable:   ./build/FleSSM (and ./build/debug/FleSSM)"
-echo "Release executable: ./build/release/FleSSM"
+echo "Debug executable:   ./build/debug/GEM"
+echo "Release executable: ./build/release/GEM" and ./build/GEM

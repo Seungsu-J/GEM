@@ -18,7 +18,7 @@
 #define NWARPS_TOTAL (GRID_DIM * BLOCK_DIM / WARP_SIZE)
 
 #define MAX_VQ 16u
-#define MAX_EQ 16u
+#define MAX_EQ 32u
 #define MAX_VLQ 32u
 #define ET_SIZE 32u
 #define MASK_HIGH31 (0xfffffffeu) // 111...1110

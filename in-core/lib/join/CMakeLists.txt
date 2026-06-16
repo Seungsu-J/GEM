@@ -1,6 +1,14 @@
 add_library(join STATIC
   src/join_trie.cu
+  src/host_select.cu
+  src/direct_join.cu
+  src/refer_join.cu
+  src/join_helpers.cu
+  src/join_context.cu
   src/join_trie_kernel.cu
+  src/host_select_kernel.cu
+  src/direct_join_kernel.cu
+  src/refer_join_kernel.cu
   )
 
 target_link_libraries(join

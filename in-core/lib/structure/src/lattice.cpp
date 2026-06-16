@@ -88,8 +88,7 @@ void Lattice::construct_linked_list_extend(cpuGraph *graph)
     ++num_lattice_nodes;
 
 #ifndef NDEBUG
-    std::cout << "cur = " << cur
-              << ", num_lattice_nodes = " << num_lattice_nodes << std::endl;
+    // std::cout << "cur = " << cur << ", lattice_node_id = " << num_lattice_nodes-1 << std::endl;
 #endif
 
     if (level + 1 == num_edges) // final
@@ -366,8 +365,7 @@ void Lattice::compute_reachable_nodes(
     for (auto next_id : linked_list[cur_id])
     {
 #ifndef NDEBUG
-      std::cout << "cur_id = " << cur_id << ", next_id = " << next_id
-                << std::endl;
+      // std::cout << "cur_id = " << cur_id << ", next_id = " << next_id << std::endl;
 #endif
       reachable_nodes[next_id].insert(reachable_nodes[cur_id].begin(), reachable_nodes[cur_id].end());
       reachable_nodes[next_id].insert(cur_id);
