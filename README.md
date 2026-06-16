@@ -31,4 +31,47 @@ mkdir build
 bash build.sh
 ```
 
-Debug and Release version of executables will be built. 
+Debug and Release version of executables will be built, and they are in `./build/debug/GEM` and `./build/release/GEM` respectively.
+
+# 3. Execution
+
+One can run `GEM` by this command:
+
+```bash
+GEM -q <path/to/query_graph> -d <path/to/data_graph> --gpu <gpu_card_id> >> output_file.txt
+```
+
+or
+
+```bash
+GEM -q <path/to/query_graph_folder> -d <path/to/data_graph> --gpu <gpu_card_id> >> output_file.txt
+```
+
+`path/to/query_graph` or `path/to_query_graph_folder` and `path/to/data_graph` is required. 
+`gpu_card_id` is 0 by default. 
+If no output_file.txt is set, GEM uses standard output (terminal). 
+
+In addition, one can simply conduct the experiments using the pre-written script `script.sh` with adjustments. 
+
+# 4. Data Format
+
+Both data graph file and query graph file use the same format in the file as below.
+
+```
+t #v #e
+v <vid> <vlabel> <vdegree>
+...
+v <vid> <vlabel> <vdegree>
+e <vid_src> <vid_dst>
+...
+e <vid_src> <vid_dst>
+```
+
+Note:
+- #e is the number of undirected edges.
+- vid grows from 0, contiguously
+- vdegree is the degree of undirected edges
+- vid_src should be less than vid_dst.
+- the beginning `t`, `v`, `e` is a character for marking.
+
+# 5. Report
