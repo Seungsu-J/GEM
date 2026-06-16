@@ -519,7 +519,7 @@ void direct_select()
     return;
   }
 
-  std::cout << "Performing Direct Select" << std::endl;
+  // std::cout << "Performing Direct Select" << std::endl;
 #ifndef NDEBUG
   std::cout << "Performing Direct Select" << std::endl;
 #endif
@@ -985,7 +985,7 @@ void refer_select()
   auto &ht = HashTable::getInstance();
   auto &jc = JoinContext::getInstance();
 
-  std::cout << "Performing Refer Select" << std::endl;
+  // std::cout << "Performing Refer Select" << std::endl;
 #ifndef NDEBUG
   std::cout << "Performing Refer Select" << std::endl;
 #endif

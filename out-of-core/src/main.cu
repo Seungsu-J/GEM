@@ -144,9 +144,9 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     size_t optimal_limit = aggressive_warmup(device, main_stream, 500);
 
     MemoryManager::initialize(optimal_limit);
-    std::cout << "Memory Manager initialized with GPU memory limit: "
-              << (optimal_limit / 1024.0 / 1024.0 / 1024.0) << " GB"
-              << std::endl;
+    // std::cout << "Memory Manager initialized with GPU memory limit: "
+    //           << (optimal_limit / 1024.0 / 1024.0 / 1024.0) << " GB"
+    //           << std::endl;
     MemoryManager *mem_mgr = &MemoryManager::getInstance();
     VirtualEvictPolicy *eviction_policy_ptr = new LRUEvictPolicy();
     mem_mgr->set_eviction_policy(eviction_policy_ptr);
@@ -193,6 +193,8 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time);
 
+    double total_time_us = 0.0; // sum of all reported phase times
+
     Lattice::initialize(hq.num_e);
     Lattice *lat = &Lattice::getInstance();
     lat->construct_linked_list_extend(&hq);
@@ -236,6 +238,7 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     duration = std::chrono::duration_cast<std::chrono::microseconds>(
         end_time - start_time);
     std::cout << "Filter time: " << duration.count() << " us" << std::endl;
+    total_time_us += duration.count();
 
     start_time = std::chrono::high_resolution_clock::now();
     hash_table->build(&hq, h_num_u_candidates_, d_u_candidate_vs_,
@@ -245,6 +248,7 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
         end_time - start_time);
     std::cout << "Build Hash Table time: " << duration.count() << " us"
               << std::endl;
+    total_time_us += duration.count();
 
     start_time = std::chrono::high_resolution_clock::now();
     utm->initVertexTries(d_u_candidate_vs_, h_num_u_candidates_);
@@ -253,6 +257,7 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
         end_time - start_time);
     std::cout << "initVertexTries time: " << duration.count() << " us"
               << std::endl;
+    total_time_us += duration.count();
 
     start_time = std::chrono::high_resolution_clock::now();
     utm->construct_edge_candidates_cpu(&hq, &hg, h_u_candidate_vs_,
@@ -261,6 +266,7 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
     duration = std::chrono::duration_cast<std::chrono::microseconds>(
         end_time - start_time);
     std::cout << "construct time: " << duration.count() << " us" << std::endl;
+    total_time_us += duration.count();
 
     size_t tries_bytes = utm->getTotalMemoryUsage();
     size_t graph_bytes = 0;
@@ -302,6 +308,11 @@ static int runSingleQuery(const QueryJob &job, cpuGraph &hg,
 
     std::cout << "Join Time: " << duration.count() << " us" << std::endl;
     std::cout << "Join Time: " << duration_ms.count() << " ms" << std::endl;
+    total_time_us += duration.count();
+
+    double total_time_ms = total_time_us / 1000.0;
+    std::cout << "Total Time: " << total_time_us << " us" << std::endl;
+    std::cout << "Total Time: " << total_time_ms << " ms" << std::endl;
 
     std::cout << "\n=== Final Results ===" << std::endl;
     for (uint32_t rq_id : lat->computed_rq_ids) {

@@ -46,7 +46,7 @@ void direct_join_without_duplication()
   auto &mem_mgr = MemoryManager::getInstance();
   auto &ht = HashTable::getInstance();
   auto &jc = JoinContext::getInstance();
-  std::cout << "Performing Direct Join without duplication check." << std::endl;
+  // std::cout << "Performing Direct Join without duplication check." << std::endl;
 #ifndef NDEBUG
   std::cout << "Performing Direct Join without duplication check." << std::endl;
 #endif
@@ -148,7 +148,7 @@ void direct_join_without_duplication_debug()
 
 void direct_join_with_duplication()
 {
-  std::cout << "Performing Direct Join with duplication check" << std::endl;
+  // std::cout << "Performing Direct Join with duplication check" << std::endl;
 
   auto &mem_mgr = MemoryManager::getInstance();
   auto &ht = HashTable::getInstance();
@@ -2765,7 +2765,7 @@ void direct_join_without_duplication_pipeline_write(uint64_t *d_row_offsets)
 
 void direct_join_with_duplication_debug()
 {
-  std::cout << "Performing Direct Join with duplication check" << std::endl;
+  // std::cout << "Performing Direct Join with duplication check" << std::endl;
 
   auto &mem_mgr = MemoryManager::getInstance();
   auto &ht = HashTable::getInstance();
