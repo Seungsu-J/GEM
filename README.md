@@ -1,5 +1,5 @@
 # GEM
-repo for ICDE research paper "GEM: Revisiting GPU-Accelerated Edge-Centric Subgraph Matching on Large Graphs", under review
+This is the repository for the paper "GEM: Revisiting GPU-Accelerated Edge-Centric Subgraph Matching on Large Graphs", accepted by ICDE 2027. 
 
 GEM supports both in-memory and out-of-core execution. For simplicity and convenient experimental study, codes for two modes are organized separately, with only the difference on filtering phase.
 
