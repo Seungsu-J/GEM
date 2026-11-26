@@ -10,7 +10,7 @@ Compilation and execution scripts are the same for both.
 - nvcc 12.0 or higher
 - gcc 11.3 or higher
 - C++ 17 or higher
-- OpemMP (for out-of-core execution)
+- OpenMP (for out-of-core execution)
 
 # 2. Compilation
 
